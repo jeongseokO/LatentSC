@@ -383,7 +383,7 @@ def get_messages_usc(question, responses, cot=False):
     ]
     user_content = f"I have generated the following responses to the question: {question}"
     for idx, response in enumerate(responses):
-        user_content += f"\nResponse {idx}: {response}"
+        user_content += f"\nPath {idx + 1}: {response}"
     if cot == True:
         user_content += (
             "\nSelect the most consistent response based on majority consensus. "

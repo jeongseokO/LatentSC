@@ -148,6 +148,35 @@ def extract_alphabet(text):
             return answer
     return "No Match"
 
+def extract_gsm8k_number(text):
+    boxed = last_boxed_only_string(text)
+    if boxed != "No Match":
+        boxed = boxed.replace(",", "").rstrip(".")
+        val = safe_convert_to_float(boxed)
+        if isinstance(val, float):
+            return val
+        nums = re.findall(r"-?\d+(?:\.\d+)?", boxed)
+        if nums:
+            return safe_convert_to_float(nums[-1])
+
+    hashed = extract_number(text).replace(",", "").rstrip(".")
+    if hashed != "No Match":
+        return safe_convert_to_float(hashed)
+
+    answer_patterns = [
+        r"(?:the\s+)?answer\s+is\s*(?:\\boxed\s*\{\s*)?\$?\s*(-?\d[\d,]*(?:\.\d+)?)",
+        r"therefore,?\s*(?:the\s+)?answer\s+is\s*(?:\\boxed\s*\{\s*)?\$?\s*(-?\d[\d,]*(?:\.\d+)?)",
+    ]
+    for pattern in answer_patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
+        if matches:
+            return safe_convert_to_float(matches[-1].replace(",", "").rstrip("."))
+
+    nums = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    if nums:
+        return safe_convert_to_float(nums[-1].rstrip("."))
+    return "No Match"
+
 def adapt_cot_ex_for_legacy(dataset, cot_ex):
     # Legacy prompt style uses #### for some datasets
     legacy_boxed_to_hash = {"MMLU", "truthfulqa_mcqa", "commonsense_qa", "GSM8K"}
@@ -163,7 +192,7 @@ def adapt_cot_ex_for_legacy(dataset, cot_ex):
 def extract_candidate(completions, ds, gold=False):
     if gold:
         if ds=="GSM8K":
-            real_ans = safe_convert_to_float(extract_number(completions).replace(',',''))
+            real_ans = extract_gsm8k_number(completions)
         elif ds=="MATH":
             real_ans = safe_convert_to_float(last_boxed_only_string(completions).replace(',',''))
         elif ds=="triviaqa":
@@ -181,11 +210,7 @@ def extract_candidate(completions, ds, gold=False):
             ans_list.append(a)
     elif ds == "GSM8K":
         for text in completions:
-            boxed = last_boxed_only_string(text)
-            if boxed != "No Match":
-                a = safe_convert_to_float(boxed.replace(',', '').rstrip('.'))
-            else:
-                a = safe_convert_to_float(extract_number(text).replace(',','').rstrip('.'))
+            a = extract_gsm8k_number(text)
             ans_list.append(a)
     elif ds == "MATH":
         for text in completions:
@@ -271,65 +296,59 @@ def calculate_ranking_scores(method_results, texts, dataset):
 
     return dict(ranking_scores)
 
-def dynamic_topk_lsc(weights, ans_list, temp=0.9, decrease_threshold=0.0):
+def dynamic_topk_lsc(score_matrix, ans_list, temp=0.9, decrease_threshold=0.0):
     """
-    Dynamic TopK LSC: Calculate from top2 to topN each,
-    find the point with the largest decrease in max_sim_score and use K right before that point
+    Dynamic TopK LSC over the same exp(sim/temp) score matrix used by LSC.
+    For each K, score each path by its average top-K neighbor score, then
+    select the K immediately before the largest drop in the best score curve.
     """
     num_paths = len(ans_list)
-    max_k = min(num_paths - 1, num_paths)  # Set maximum K
+    max_k = max(num_paths - 1, 1)
+    score_for_topk = score_matrix.copy()
+    np.fill_diagonal(score_for_topk, -np.inf)
     
+    k_values = list(range(2, max_k + 1))
     max_scores = []
     best_indices = []
-    avg_weights_list = []
+    avg_score_by_k = []
     
-    # Calculate from K=2 to max_k
-    for k in range(2, max_k + 1):
-        # Select only top K weights from each row and average
-        avg_weight_topk = np.array([
+    for k in k_values:
+        avg_score_topk = np.array([
             np.mean(np.sort(row)[-k:])
-            for row in weights
+            for row in score_for_topk
         ])
         
-        best_idx = int(np.argmax(avg_weight_topk))
-        max_score = avg_weight_topk[best_idx]
+        best_idx = int(np.argmax(avg_score_topk))
+        max_score = avg_score_topk[best_idx]
         
-        avg_weights_list.append(avg_weight_topk)
+        avg_score_by_k.append(avg_score_topk)
         max_scores.append(max_score)
         best_indices.append(best_idx)
     
-    # Find point with largest decrease in max_sim_score
-    optimal_k = max_k  # Default: last K
+    optimal_k = k_values[-1] if k_values else 1
     largest_drop = 0.0
     largest_drop_idx = -1
     
-    # Calculate differences between consecutive points to find largest decrease
     for i in range(1, len(max_scores)):
-        score_diff = max_scores[i-1] - max_scores[i]  # Decrease from previous to current point
-        if score_diff > largest_drop:
+        score_diff = max_scores[i - 1] - max_scores[i]
+        if score_diff > largest_drop and score_diff > decrease_threshold:
             largest_drop = score_diff
             largest_drop_idx = i
     
-    # Select K right before the point with largest decrease
-    if largest_drop_idx != -1 and largest_drop > 0:
-        optimal_k = largest_drop_idx + 1  # largest_drop_idx is where decrease occurred, so optimal is right before
+    if largest_drop_idx != -1:
+        optimal_k = k_values[largest_drop_idx - 1]
     
-    # Select result corresponding to optimal_k
-    k_idx = optimal_k - 2  # Convert to 0-based index (K=2 is index 0)
-    if k_idx >= len(best_indices):
-        k_idx = len(best_indices) - 1
-    elif k_idx < 0:
-        k_idx = 0
+    k_idx = k_values.index(optimal_k) if optimal_k in k_values else 0
     
     selected_idx = best_indices[k_idx]
     selected_answer = ans_list[selected_idx]
     selected_conf = ans_list.count(selected_answer) / len(ans_list)
-    selected_calib = avg_weights_list[k_idx][selected_idx]
+    selected_calib = avg_score_by_k[k_idx][selected_idx]
     
-    # Add decrease information
-    score_diffs = []
-    for i in range(1, len(max_scores)):
-        score_diffs.append(max_scores[i-1] - max_scores[i])
+    score_diffs = [
+        max_scores[i - 1] - max_scores[i]
+        for i in range(1, len(max_scores))
+    ]
     
     return {
         "answer": selected_answer,
@@ -341,7 +360,7 @@ def dynamic_topk_lsc(weights, ans_list, temp=0.9, decrease_threshold=0.0):
         "score_diffs": score_diffs,
         "largest_drop": largest_drop,
         "largest_drop_idx": largest_drop_idx,
-        "all_k_results": list(zip(range(2, max_k + 1), max_scores, best_indices))
+        "all_k_results": list(zip(k_values, max_scores, best_indices))
     }
 
 def calculate_eos_lsc(embeddings, ans_list, temp):
@@ -366,7 +385,8 @@ def calculate_eos_lsc(embeddings, ans_list, temp):
 
     weights = np.exp(sim_np / temp)
     np.fill_diagonal(weights, 0.0)
-    avg_weight = weights.mean(axis=1)
+    denom = max(weights.shape[1] - 1, 1)
+    avg_weight = weights.sum(axis=1) / denom
     best_idx = int(np.argmax(avg_weight))
     answer = ans_list[best_idx]
     conf = ans_list.count(answer) / len(ans_list)
@@ -400,6 +420,10 @@ def main():
         help="Number of Summary special tokens to use"
     )
     parser.add_argument(
+        "--special_tokens", type=str, default="",
+        help="Comma-separated explicit LSC special tokens. Overrides Summary token construction."
+    )
+    parser.add_argument(
         "--aggr", type=str, default="mean",
         help="Aggregate version"
     )
@@ -426,6 +450,13 @@ def main():
     parser.add_argument(
         "--use_eos_second", type=str, default="False", choices=["True", "False"],
         help="Use 2nd layer for all EOS methods (if False, use last layer)"
+    )
+    parser.add_argument(
+        "--methods", type=str, default=os.environ.get("METHODS", "ALL"),
+        help=(
+            "Comma-separated methods to run. Use ALL for the default set. "
+            "Examples: LSC,SC,WUCS,USC,Random,LSC_dynamic"
+        )
     )
     parser.add_argument('--num_path', type=int, default=10)
     parser.add_argument('--seed', type=int, default=77)
@@ -456,8 +487,8 @@ def main():
             args.aggr = cfg.lsc_aggr
         if hasattr(cfg, "lsc_remove_eos"):
             remove_eos = bool(cfg.lsc_remove_eos)
-        if hasattr(cfg, "lsc_temp"):
-            args.LSC_TEMP = float(cfg.lsc_temp)
+        if hasattr(cfg, "lsc_score_temp"):
+            args.LSC_TEMP = float(cfg.lsc_score_temp)
     except Exception:
         cfg = None
     if "/" not in model_arg:
@@ -466,7 +497,15 @@ def main():
     Repo_name = repo_base
     HF_MODEL_NAME = model_arg
     is_remove_eos = remove_eos
-    SPECIAL_TOKENS = [f"<|Summary{i}|>" for i in range(1, num_special_tokens + 1)]
+    if args.special_tokens.strip():
+        SPECIAL_TOKENS = [tok.strip() for tok in args.special_tokens.split(",") if tok.strip()]
+        num_special_tokens = len(SPECIAL_TOKENS)
+    elif cfg is not None and hasattr(cfg, "lsc_special_tokens"):
+        SPECIAL_TOKENS = list(cfg.lsc_special_tokens)
+        num_special_tokens = len(SPECIAL_TOKENS)
+    else:
+        special_prefix = getattr(cfg, "lsc_special_token_prefix", "Summary") if cfg is not None else "Summary"
+        SPECIAL_TOKENS = [f"<|{special_prefix}{i}|>" for i in range(1, num_special_tokens + 1)]
     SPECIAL_TOKEN = SPECIAL_TOKENS[-1] if SPECIAL_TOKENS else None
     NUM_PATHS = args.num_path
     MAX_NEW_TOKENS = 2048
@@ -478,21 +517,62 @@ def main():
     
     # Define new 3 EOS methods
     eos_methods = ["EOS_pred", "EOS_first", "EOS_special"]
-    
-    # Define methods used in TruthfulQA and CNN DailyMail (excluding SC)
-    if args.dataset in ["truthfulqa", "cnn_dailymail"]:
-        all_methods = ["LSC", "WUCS", "USC", "Random"]
-        if enable_dynamic_topk:
-            all_methods.append("LSC_dynamic")
-        if use_eos:
-            all_methods.extend(eos_methods)
+
+    base_methods = ["LSC", "WUCS", "USC", "Random"]
+    if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
+        base_methods.insert(1, "SC")
+    default_methods = list(base_methods)
+    if enable_dynamic_topk:
+        default_methods.append("LSC_dynamic")
+    if use_eos:
+        default_methods.extend(eos_methods)
+    if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
+        default_methods.extend([f"LSC_top{k}" for k in LSC_TOPK_LIST])
+
+    method_aliases = {
+        "lsc": "LSC",
+        "sc": "SC",
+        "wucs": "WUCS",
+        "usc": "USC",
+        "random": "Random",
+        "rand": "Random",
+        "lsc_dynamic": "LSC_dynamic",
+        "dynamic": "LSC_dynamic",
+        "eos_pred": "EOS_pred",
+        "eos_first": "EOS_first",
+        "eos_special": "EOS_special",
+    }
+    for k in LSC_TOPK_LIST:
+        method_aliases[f"lsc_top{k}".lower()] = f"LSC_top{k}"
+        method_aliases[f"top{k}".lower()] = f"LSC_top{k}"
+
+    raw_methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    if not raw_methods or any(m.lower() == "all" for m in raw_methods):
+        selected_methods = default_methods
     else:
-        # Include SC for other datasets
-        all_methods = ["LSC", "SC", "WUCS", "USC", "Random"]
-        if enable_dynamic_topk:
-            all_methods.append("LSC_dynamic")
-        if use_eos:
-            all_methods.extend(eos_methods)
+        selected_methods = []
+        for raw_method in raw_methods:
+            canonical = method_aliases.get(raw_method.lower(), raw_method)
+            if canonical not in selected_methods:
+                selected_methods.append(canonical)
+
+    valid_methods = set(default_methods)
+    invalid_methods = [m for m in selected_methods if m not in valid_methods]
+    if invalid_methods:
+        raise ValueError(
+            f"Unsupported method(s) for {args.dataset}: {', '.join(invalid_methods)}. "
+            f"Available: {', '.join(default_methods)}"
+        )
+
+    active_methods = selected_methods
+    active_method_set = set(active_methods)
+    all_methods = [m for m in active_methods if not m.startswith("LSC_top")]
+    active_topk_values = [k for k in LSC_TOPK_LIST if f"LSC_top{k}" in active_method_set]
+    enable_dynamic_topk = "LSC_dynamic" in active_method_set
+    use_eos = any(method in active_method_set for method in eos_methods)
+
+    def method_enabled(method_name):
+        return method_name in active_method_set
     
     # Print experiment configuration summary
     print("=" * 80)
@@ -518,85 +598,21 @@ def main():
     print(f"• LSC TEMP:           {args.LSC_TEMP}")
     print(f"• Seed:               {args.seed}")
     
+    methods_str = ', '.join(active_methods)
     if args.dataset in ["truthfulqa", "cnn_dailymail"]:
-        methods_str = "LSC, WUCS, USC, Random"
-        if enable_dynamic_topk:
-            methods_str += ", LSC_dynamic"
-        if use_eos:
-            methods_str += f", {', '.join(eos_methods)}"
-        methods_str += f" (SC excluded for {args.dataset})"
-    else:
-        methods_str = ', '.join(all_methods)
+        methods_str += f" (SC/LSC_topK excluded for {args.dataset})"
     print(f"• Methods:            {methods_str}")
     print("=" * 80)
 
     # Baseline time & accuracy storage structure
-    if args.dataset in ["truthfulqa", "cnn_dailymail"]:
-        baseline_times = {
-            "LSC": 0.0,
-            "WUCS": 0.0,
-            "USC": 0.0,
-            "Random": 0.0
-        }
-        baseline_acc = {
-            "LSC": 0.0,
-            "WUCS": 0.0,
-            "USC": 0.0,
-            "Random": 0.0
-        }
-    else:
-        baseline_times = {
-            "LSC": 0.0,
-            "WUCS": 0.0,
-            "USC": 0.0,
-            "SC": 0.0,
-            "Random": 0.0
-        }
-        baseline_acc = {
-            "LSC": 0.0,
-            "WUCS": 0.0,
-            "USC": 0.0,
-            "SC": 0.0,
-            "Random": 0.0
-        }
+    baseline_times = {method: 0.0 for method in active_methods}
+    baseline_acc = {method: 0.0 for method in active_methods}
+    generation_time_total = 0.0
     
     # Add Rouge/BertScore storage structure for CNN DailyMail
     if args.dataset == "cnn_dailymail":
-        rouge_scores = {
-            "LSC": {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0},
-            "WUCS": {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0},
-            "USC": {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0},
-            "Random": {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
-        }
-        bert_scores = {
-            "LSC": 0.0,
-            "WUCS": 0.0,
-            "USC": 0.0,
-            "Random": 0.0
-        }
-    
-    # Add 3 EOS methods entries (only when use_eos is True)
-    if use_eos:
-        for eos_method in eos_methods:
-            baseline_times[eos_method] = 0.0
-            baseline_acc[eos_method] = 0.0
-            if args.dataset == "cnn_dailymail":
-                rouge_scores[eos_method] = {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
-                bert_scores[eos_method] = 0.0
-    
-    # Add LSC Dynamic TopK entry
-    if enable_dynamic_topk:
-        baseline_times["LSC_dynamic"] = 0.0
-        baseline_acc["LSC_dynamic"] = 0.0
-        if args.dataset == "cnn_dailymail":
-            rouge_scores["LSC_dynamic"] = {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
-            bert_scores["LSC_dynamic"] = 0.0
-
-    # Add entry for each LSC_TOPK value (only when not truthfulqa or cnn_dailymail)
-    if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-        for k in LSC_TOPK_LIST:
-            baseline_times[f"LSC_top{k}"] = 0.0
-            baseline_acc[f"LSC_top{k}"] = 0.0
+        rouge_scores = {method: {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0} for method in active_methods}
+        bert_scores = {method: 0.0 for method in active_methods}
 
     # New ranking score storage structure (independent consistency scores)
     ranking_scores = defaultdict(float)
@@ -616,11 +632,7 @@ def main():
     raw = load_dataset(hf_name, hf_cfg)[split]
 
     # Common initialization of method_responses
-    method_responses = {method: [] for method in all_methods}
-    # Add LSC_TOPK methods only when not TruthfulQA or CNN DailyMail
-    if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-        for k in LSC_TOPK_LIST:
-            method_responses[f"LSC_top{k}"] = []
+    method_responses = {method: [] for method in active_methods}
 
     # Dataset branching
     if args.dataset in ["truthfulqa", "cnn_dailymail"]:
@@ -630,7 +642,7 @@ def main():
 
     # Initialize model & tokenizer
     tokenizer = AutoTokenizer.from_pretrained(HF_REPO)
-    special_tokens_for_add = [f"<|Summary{i}|>" for i in range(1, num_special_tokens + 1)]
+    special_tokens_for_add = SPECIAL_TOKENS
     tokenizer.add_special_tokens({"additional_special_tokens": special_tokens_for_add})
     tokenizer.pad_token = tokenizer.eos_token
     attn_impl = os.environ.get("ATTN_IMPL", "flash_attention_2")
@@ -654,7 +666,8 @@ def main():
     model.config.pad_token_id = tokenizer.pad_token_id
     model = add_enhanced_generation(model)
     model.config.lsc_num_special_tokens = num_special_tokens
-    model.config.lsc_special_token_prefix = "Summary"
+    if not args.special_tokens.strip():
+        model.config.lsc_special_token_prefix = getattr(model.config, "lsc_special_token_prefix", "Summary")
     # Prefer config values when present
     if hasattr(model.config, "lsc_aggr"):
         args.aggr = model.config.lsc_aggr
@@ -755,23 +768,30 @@ def main():
                 choices=options
             )
         if "qwen" in args.model:
-            inputs = tokenizer.apply_chat_template(
+            chat_inputs = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
                 enable_thinking=False
             ).to(model.device)
         else:
-            inputs = tokenizer.apply_chat_template(
+            chat_inputs = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt"
             ).to(model.device)
+        if hasattr(chat_inputs, "input_ids"):
+            inputs = chat_inputs.input_ids
+            attention_mask = chat_inputs.get("attention_mask", torch.ones_like(inputs))
+        else:
+            inputs = chat_inputs
+            attention_mask = torch.ones_like(inputs)
 
         # 1) generate paths + embeddings (extract all EOS embeddings)
         with torch.inference_mode():
             out_result = model.generate_with_special_tokens(
                 inputs=inputs,
+                attention_mask=attention_mask,
                 special_tokens=special_tokens,
                 remove_eos=is_remove_eos,
                 return_embeddings=True,
@@ -792,6 +812,8 @@ def main():
         extra_time = getattr(out_result, "extra", None)
         if extra_time is None:
             extra_time = getattr(out_result, "time", 0.0)
+        generation_time = float(extra_time or 0.0)
+        generation_time_total += generation_time
         
         texts = []
         for i, seq in enumerate(sequences):
@@ -807,37 +829,48 @@ def main():
         )    
         ans_list = extract_candidate(texts, args.dataset)
         print(texts[0])
+
+        lsc_is_corr = sc_is_corr = wucs_is_corr = usc_is_corr = rand_is_corr = None
+        lsc_dynamic_is_corr = None
+        sc_answer = sc_conf = sc_time = sc_indices = None
+        wucs_answer = wucs_idx = wucs_time = wucs_calib = None
+        usc_answer = usc_idx = usc_time = None
+        rand_answer = rand_idx = rand_time = None
+        eos_evaluation_results = {}
         
         # 1b) Calculate 3 EOS methods (only when use_eos is True)
         eos_results = {}
         
         if use_eos:
             # EOS_pred: embedding when predicting EOS
-            s_eos_pred = time.perf_counter()
-            eos_pred_result = calculate_eos_lsc(eos_pred_embeddings, ans_list, args.LSC_TEMP)
-            e_eos_pred = time.perf_counter()
-            eos_pred_time = (e_eos_pred - s_eos_pred) + extra_time
-            eos_pred_result["time"] = eos_pred_time
-            eos_results["EOS_pred"] = eos_pred_result
-            baseline_times['EOS_pred'] += eos_pred_time
+            if method_enabled("EOS_pred"):
+                s_eos_pred = time.perf_counter()
+                eos_pred_result = calculate_eos_lsc(eos_pred_embeddings, ans_list, args.LSC_TEMP)
+                e_eos_pred = time.perf_counter()
+                eos_pred_time = e_eos_pred - s_eos_pred
+                eos_pred_result["time"] = eos_pred_time
+                eos_results["EOS_pred"] = eos_pred_result
+                baseline_times['EOS_pred'] += eos_pred_time
             
             # EOS_first: embedding when first EOS detected
-            s_eos_first = time.perf_counter()
-            eos_first_result = calculate_eos_lsc(eos_first_embeddings, ans_list, args.LSC_TEMP)
-            e_eos_first = time.perf_counter()
-            eos_first_time = (e_eos_first - s_eos_first) + extra_time
-            eos_first_result["time"] = eos_first_time
-            eos_results["EOS_first"] = eos_first_result
-            baseline_times['EOS_first'] += eos_first_time
+            if method_enabled("EOS_first"):
+                s_eos_first = time.perf_counter()
+                eos_first_result = calculate_eos_lsc(eos_first_embeddings, ans_list, args.LSC_TEMP)
+                e_eos_first = time.perf_counter()
+                eos_first_time = e_eos_first - s_eos_first
+                eos_first_result["time"] = eos_first_time
+                eos_results["EOS_first"] = eos_first_result
+                baseline_times['EOS_first'] += eos_first_time
             
             # EOS_special: average embedding of 6 EOS
-            s_eos_special = time.perf_counter()
-            eos_special_result = calculate_eos_lsc(eos_special_embeddings, ans_list, args.LSC_TEMP)
-            e_eos_special = time.perf_counter()
-            eos_special_time = (e_eos_special - s_eos_special) + extra_time
-            eos_special_result["time"] = eos_special_time
-            eos_results["EOS_special"] = eos_special_result
-            baseline_times['EOS_special'] += eos_special_time
+            if method_enabled("EOS_special"):
+                s_eos_special = time.perf_counter()
+                eos_special_result = calculate_eos_lsc(eos_special_embeddings, ans_list, args.LSC_TEMP)
+                e_eos_special = time.perf_counter()
+                eos_special_time = e_eos_special - s_eos_special
+                eos_special_result["time"] = eos_special_time
+                eos_results["EOS_special"] = eos_special_result
+                baseline_times['EOS_special'] += eos_special_time
 
         # 2) LSC calculation (overall avg)
         s_lsc = time.perf_counter()
@@ -848,20 +881,22 @@ def main():
 
         weights = np.exp(sim_np / args.LSC_TEMP)
         np.fill_diagonal(weights, 0.0)
-        avg_weight = weights.mean(axis=1)
+        denom = max(weights.shape[1] - 1, 1)
+        avg_weight = weights.sum(axis=1) / denom
         best_idx = int(np.argmax(avg_weight))
         lsc_answer = ans_list[best_idx]
         e_lsc = time.perf_counter()
-        lsc_time = (e_lsc - s_lsc) + extra_time
+        lsc_time = e_lsc - s_lsc
         lsc_conf = ans_list.count(lsc_answer) / len(ans_list)
         lsc_calib = avg_weight[best_idx]
 
-        baseline_times['LSC'] += lsc_time
+        if method_enabled("LSC"):
+            baseline_times['LSC'] += lsc_time
 
         # 2b) Calculate for each LSC_TOPK value (only when not truthfulqa or cnn_dailymail)
         lsc_topk_results = {}
         if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-            for k in LSC_TOPK_LIST:
+            for k in active_topk_values:
                 s_lsc_topk = time.perf_counter()
                 # Select only top K weights from each row and average
                 avg_weight_topk = np.array([
@@ -871,7 +906,7 @@ def main():
                 best_idx_topk = int(np.argmax(avg_weight_topk))
                 lsc_topk_answer = ans_list[best_idx_topk]
                 e_lsc_topk = time.perf_counter()
-                lsc_topk_time = (e_lsc_topk - s_lsc_topk) + extra_time
+                lsc_topk_time = e_lsc_topk - s_lsc_topk
                 lsc_topk_conf = ans_list.count(lsc_topk_answer) / len(ans_list)
                 lsc_topk_calib = avg_weight_topk[best_idx_topk]
 
@@ -895,12 +930,12 @@ def main():
                 weights, ans_list, temp=args.LSC_TEMP
             )
             e_dynamic = time.perf_counter()
-            dynamic_time = (e_dynamic - s_dynamic) + extra_time
+            dynamic_time = e_dynamic - s_dynamic
             dynamic_result["time"] = dynamic_time
             baseline_times["LSC_dynamic"] += dynamic_time
 
         # SC calculation (only when not truthfulqa or cnn_dailymail)
-        if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
+        if method_enabled("SC") and args.dataset not in ["truthfulqa", "cnn_dailymail"]:
             s_sc = time.perf_counter()
             sc_answer, sc_conf, sc_indices = majority_vote_with_conf(ans_list)
             e_sc = time.perf_counter()
@@ -908,29 +943,32 @@ def main():
             baseline_times['SC'] += sc_time
 
         # WUCS calculation
-        s_wucs = time.perf_counter()
-        wucs_idx, wucs_calib = weighted_ucs_rerank(texts, cleaned_sequences, text_probs, use_consensus=True)
-        wucs_answer = ans_list[wucs_idx]
-        e_wucs = time.perf_counter()
-        wucs_time = e_wucs - s_wucs
-        baseline_times['WUCS'] += wucs_time
+        if method_enabled("WUCS"):
+            s_wucs = time.perf_counter()
+            wucs_idx, wucs_calib = weighted_ucs_rerank(texts, cleaned_sequences, text_probs, use_consensus=True)
+            wucs_answer = ans_list[wucs_idx]
+            e_wucs = time.perf_counter()
+            wucs_time = e_wucs - s_wucs
+            baseline_times['WUCS'] += wucs_time
 
         # USC calculation
-        s_usc = time.perf_counter()
-        usc_idx = USC_generate(question, texts, model, tokenizer, model_name=args.model, use_cot=False)
-        usc_idx = usc_idx if 0 <= usc_idx < len(ans_list) else 0
-        usc_answer = ans_list[usc_idx]
-        e_usc = time.perf_counter()
-        usc_time = e_usc - s_usc
-        baseline_times['USC'] += usc_time
+        if method_enabled("USC"):
+            s_usc = time.perf_counter()
+            usc_idx = USC_generate(question, texts, model, tokenizer, model_name=args.model, use_cot=False)
+            usc_idx = usc_idx if 0 <= usc_idx < len(ans_list) else 0
+            usc_answer = ans_list[usc_idx]
+            e_usc = time.perf_counter()
+            usc_time = e_usc - s_usc
+            baseline_times['USC'] += usc_time
 
         # Random calculation
-        s_rand = time.perf_counter()
-        rand_idx = random.randrange(NUM_PATHS)
-        rand_answer = ans_list[rand_idx]
-        e_rand = time.perf_counter()
-        rand_time = e_rand - s_rand
-        baseline_times['Random'] += rand_time
+        if method_enabled("Random"):
+            s_rand = time.perf_counter()
+            rand_idx = random.randrange(NUM_PATHS)
+            rand_answer = ans_list[rand_idx]
+            e_rand = time.perf_counter()
+            rand_time = e_rand - s_rand
+            baseline_times['Random'] += rand_time
 
         # ===============================
         # CNN DailyMail evaluation logic - enhanced debugging
@@ -986,16 +1024,21 @@ def main():
                     print("  3. GPU memory shortage")
 
             # Store scores for answers selected by each method
-            methods_data = {
+            candidate_method_data = {
                 "LSC": {"idx": best_idx, "answer": lsc_answer},
                 "WUCS": {"idx": wucs_idx, "answer": wucs_answer},
                 "USC": {"idx": usc_idx, "answer": usc_answer},
                 "Random": {"idx": rand_idx, "answer": rand_answer}
             }
+            methods_data = {
+                method: data
+                for method, data in candidate_method_data.items()
+                if method_enabled(method)
+            }
 
             # Add 3 EOS methods (only when use_eos is True)
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     eos_result = eos_results[eos_method]
                     methods_data[eos_method] = {"idx": eos_result["idx"], "answer": eos_result["answer"]}
 
@@ -1032,16 +1075,21 @@ def main():
         # ===============================
         sample_ranking_scores = {}
         if args.dataset == "truthfulqa":
-            method_results = {
+            candidate_method_results = {
                 "LSC": {"answer": lsc_answer, "idx": best_idx, "time": lsc_time, "conf": lsc_conf, "calib": lsc_calib},
                 "WUCS": {"answer": wucs_answer, "idx": wucs_idx, "time": wucs_time, 'wucs_calib': wucs_calib},
                 "USC": {"answer": usc_answer, "idx": usc_idx, "time": usc_time},
                 "Random": {"answer": rand_answer, "idx": rand_idx, "time": rand_time}
             }
+            method_results = {
+                method: data
+                for method, data in candidate_method_results.items()
+                if method_enabled(method)
+            }
             
             # Add 3 EOS methods (only when use_eos is True)
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     eos_result = eos_results[eos_method]
                     method_results[eos_method] = {
                         "answer": eos_result["answer"], 
@@ -1068,27 +1116,40 @@ def main():
             for method, score in sample_ranking_scores.items():
                 ranking_scores[method] += score
         
-        # Store responses (CNN DailyMail and TruthfulQA)
-        if args.dataset in ["truthfulqa", "cnn_dailymail"]:
-            method_responses["LSC"].append(lsc_answer)
-            method_responses["WUCS"].append(wucs_answer)
-            method_responses["USC"].append(usc_answer)
-            method_responses["Random"].append(rand_answer)
-            if use_eos:
-                for eos_method in eos_methods:
-                    method_responses[eos_method].append(eos_results[eos_method]["answer"])
+        # Store responses. CNN/DailyMail responses are already appended in its metric block above.
+        if args.dataset == "truthfulqa":
+            response_values = {
+                "LSC": lsc_answer,
+                "WUCS": wucs_answer,
+                "USC": usc_answer,
+                "Random": rand_answer,
+            }
+            response_values.update({method: result["answer"] for method, result in eos_results.items()})
             if enable_dynamic_topk and dynamic_result is not None:
-                method_responses["LSC_dynamic"].append(dynamic_result["answer"])
+                response_values["LSC_dynamic"] = dynamic_result["answer"]
+            for method in active_methods:
+                if method in response_values:
+                    method_responses[method].append(response_values[method])
+        elif args.dataset == "cnn_dailymail":
+            pass
         else:
-            if enable_dynamic_topk:
-                method_responses["LSC_dynamic"].append(dynamic_result["answer"])
+            response_values = {
+                "LSC": lsc_answer,
+                "SC": sc_answer,
+                "WUCS": wucs_answer,
+                "USC": usc_answer,
+                "Random": rand_answer,
+            }
+            if enable_dynamic_topk and dynamic_result is not None:
+                response_values["LSC_dynamic"] = dynamic_result["answer"]
             
             for k, result in lsc_topk_results.items():
-                method_responses[f"LSC_top{k}"].append(result["answer"])
+                response_values[f"LSC_top{k}"] = result["answer"]
             
-            if use_eos:
-                for eos_method in eos_methods:
-                    method_responses[eos_method].append(eos_results[eos_method]["answer"])
+            response_values.update({method: result["answer"] for method, result in eos_results.items()})
+            for method in active_methods:
+                if method in response_values:
+                    method_responses[method].append(response_values[method])
             
         print(f"\n[{args.dataset}] Sample {qi+1}/{len(ds)}")
         print("Q:", question)
@@ -1102,16 +1163,21 @@ def main():
         # Perform evaluation
         if args.dataset == "truthfulqa":
             # TruthfulQA: Evaluate only selected answers
-            selected_answers = {
+            candidate_selected_answers = {
                 "LSC": lsc_answer,
                 "WUCS": wucs_answer,
                 "USC": usc_answer,
                 "Random": rand_answer
             }
+            selected_answers = {
+                method: answer
+                for method, answer in candidate_selected_answers.items()
+                if method_enabled(method)
+            }
             
             # Add 3 EOS methods (only when use_eos is True)
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     selected_answers[eos_method] = eos_results[eos_method]["answer"]
 
             if enable_dynamic_topk and dynamic_result is not None:
@@ -1129,15 +1195,19 @@ def main():
                 baseline_acc[method] += int(is_corr)
                 
             # Get evaluation results for each method
-            lsc_is_corr = evaluation_results[lsc_answer]["is_corr"]
-            wucs_is_corr = evaluation_results[wucs_answer]["is_corr"]
-            usc_is_corr = evaluation_results[usc_answer]["is_corr"]
-            rand_is_corr = evaluation_results[rand_answer]["is_corr"]
+            if method_enabled("LSC"):
+                lsc_is_corr = evaluation_results[lsc_answer]["is_corr"]
+            if method_enabled("WUCS"):
+                wucs_is_corr = evaluation_results[wucs_answer]["is_corr"]
+            if method_enabled("USC"):
+                usc_is_corr = evaluation_results[usc_answer]["is_corr"]
+            if method_enabled("Random"):
+                rand_is_corr = evaluation_results[rand_answer]["is_corr"]
             
             # 3 EOS methods evaluation results (only when use_eos is True)
             eos_evaluation_results = {}
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     answer = eos_results[eos_method]["answer"]
                     eos_evaluation_results[eos_method] = evaluation_results[answer]
 
@@ -1157,15 +1227,19 @@ def main():
             print()
         elif args.dataset == "cnn_dailymail":
             # CNN DailyMail is evaluated with Rouge/BertScore, so set is_corr to True
-            lsc_is_corr = True
-            wucs_is_corr = True
-            usc_is_corr = True
-            rand_is_corr = True
+            if method_enabled("LSC"):
+                lsc_is_corr = True
+            if method_enabled("WUCS"):
+                wucs_is_corr = True
+            if method_enabled("USC"):
+                usc_is_corr = True
+            if method_enabled("Random"):
+                rand_is_corr = True
 
             # Set 3 EOS methods to True as well
             eos_evaluation_results = {}
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     eos_evaluation_results[eos_method] = {"is_corr": True}
 
             # Set LSC Dynamic to True as well
@@ -1176,25 +1250,29 @@ def main():
             print(f"\n===== Rouge & BertScore Results for Sample {qi+1} =====")
             print(f"Gold Answer: {gold_ans[:100]}...")
             if sample_all_rouge_scores and sample_all_bert_scores:
-                print(f"LSC Answer (idx={best_idx+1}): {lsc_answer[:100]}...")
-                print(f"  Rouge1: {sample_all_rouge_scores[best_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[best_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[best_idx]['rougeL']:.4f}")
-                print(f"  BertScore: {sample_all_bert_scores[best_idx]:.4f}")
+                if method_enabled("LSC"):
+                    print(f"LSC Answer (idx={best_idx+1}): {lsc_answer[:100]}...")
+                    print(f"  Rouge1: {sample_all_rouge_scores[best_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[best_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[best_idx]['rougeL']:.4f}")
+                    print(f"  BertScore: {sample_all_bert_scores[best_idx]:.4f}")
                     
-                print(f"WUCS Answer (idx={wucs_idx+1}): {wucs_answer[:100]}...")
-                print(f"  Rouge1: {sample_all_rouge_scores[wucs_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[wucs_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[wucs_idx]['rougeL']:.4f}")
-                print(f"  BertScore: {sample_all_bert_scores[wucs_idx]:.4f}")
+                if method_enabled("WUCS"):
+                    print(f"WUCS Answer (idx={wucs_idx+1}): {wucs_answer[:100]}...")
+                    print(f"  Rouge1: {sample_all_rouge_scores[wucs_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[wucs_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[wucs_idx]['rougeL']:.4f}")
+                    print(f"  BertScore: {sample_all_bert_scores[wucs_idx]:.4f}")
                     
-                print(f"USC Answer (idx={usc_idx+1}): {usc_answer[:100]}...")
-                print(f"  Rouge1: {sample_all_rouge_scores[usc_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[usc_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[usc_idx]['rougeL']:.4f}")
-                print(f"  BertScore: {sample_all_bert_scores[usc_idx]:.4f}")
+                if method_enabled("USC"):
+                    print(f"USC Answer (idx={usc_idx+1}): {usc_answer[:100]}...")
+                    print(f"  Rouge1: {sample_all_rouge_scores[usc_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[usc_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[usc_idx]['rougeL']:.4f}")
+                    print(f"  BertScore: {sample_all_bert_scores[usc_idx]:.4f}")
                     
-                print(f"Random Answer (idx={rand_idx+1}): {rand_answer[:100]}...")
-                print(f"  Rouge1: {sample_all_rouge_scores[rand_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[rand_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[rand_idx]['rougeL']:.4f}")
-                print(f"  BertScore: {sample_all_bert_scores[rand_idx]:.4f}")
+                if method_enabled("Random"):
+                    print(f"Random Answer (idx={rand_idx+1}): {rand_answer[:100]}...")
+                    print(f"  Rouge1: {sample_all_rouge_scores[rand_idx]['rouge1']:.4f}, Rouge2: {sample_all_rouge_scores[rand_idx]['rouge2']:.4f}, RougeL: {sample_all_rouge_scores[rand_idx]['rougeL']:.4f}")
+                    print(f"  BertScore: {sample_all_bert_scores[rand_idx]:.4f}")
                 
                 # Output 3 EOS methods results (only when use_eos is True)
                 if use_eos:
-                    for eos_method in eos_methods:
+                    for eos_method in eos_results:
                         eos_result = eos_results[eos_method]
                         idx = eos_result["idx"]
                         print(f"{eos_method} Answer (idx={idx+1}): {eos_result['answer'][:100]}...")
@@ -1212,16 +1290,21 @@ def main():
             print("=" * 60)
         else:
             # Existing evaluation method (other datasets)
-            lsc_is_corr = evaluate_function(question, lsc_answer, gold_ans, args.dataset)
-            sc_is_corr = evaluate_function(question, sc_answer, gold_ans, args.dataset)
-            wucs_is_corr = evaluate_function(question, wucs_answer, gold_ans, args.dataset)
-            usc_is_corr = evaluate_function(question, usc_answer, gold_ans, args.dataset)
-            rand_is_corr = evaluate_function(question, rand_answer, gold_ans, args.dataset)
+            if method_enabled("LSC"):
+                lsc_is_corr = evaluate_function(question, lsc_answer, gold_ans, args.dataset)
+            if method_enabled("SC"):
+                sc_is_corr = evaluate_function(question, sc_answer, gold_ans, args.dataset)
+            if method_enabled("WUCS"):
+                wucs_is_corr = evaluate_function(question, wucs_answer, gold_ans, args.dataset)
+            if method_enabled("USC"):
+                usc_is_corr = evaluate_function(question, usc_answer, gold_ans, args.dataset)
+            if method_enabled("Random"):
+                rand_is_corr = evaluate_function(question, rand_answer, gold_ans, args.dataset)
             
             # 3 EOS methods evaluation (only when use_eos is True)
             eos_evaluation_results = {}
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     is_corr = evaluate_function(question, eos_results[eos_method]["answer"], gold_ans, args.dataset)
                     eos_evaluation_results[eos_method] = {"is_corr": is_corr}
                     baseline_acc[eos_method] += int(is_corr)
@@ -1230,29 +1313,35 @@ def main():
             if enable_dynamic_topk and dynamic_result is not None:
                 dynamic_is_corr = evaluate_function(question, dynamic_result["answer"], gold_ans, args.dataset)
                 dynamic_result["is_corr"] = dynamic_is_corr
-                dynamic_result["is_major"] = (dynamic_result["conf"] == sc_conf)
+                dynamic_result["is_major"] = (dynamic_result["conf"] == sc_conf) if sc_conf is not None else None
                 baseline_acc["LSC_dynamic"] += int(dynamic_is_corr)
             
             # Evaluate each LSC_TOPK value
             for k, result in lsc_topk_results.items():
                 result["is_corr"] = evaluate_function(question, result["answer"], gold_ans, args.dataset)
-                result["is_major"] = (result["conf"] == sc_conf)
+                result["is_major"] = (result["conf"] == sc_conf) if sc_conf is not None else None
                 baseline_acc[f'LSC_top{k}'] += int(result["is_corr"])
             
             # Update accuracy
-            baseline_acc['LSC'] += int(lsc_is_corr)
-            baseline_acc['SC'] += int(sc_is_corr)
-            baseline_acc['WUCS'] += int(wucs_is_corr)
-            baseline_acc['USC'] += int(usc_is_corr)
-            baseline_acc['Random'] += int(rand_is_corr)
+            if method_enabled("LSC"):
+                baseline_acc['LSC'] += int(lsc_is_corr)
+            if method_enabled("SC"):
+                baseline_acc['SC'] += int(sc_is_corr)
+            if method_enabled("WUCS"):
+                baseline_acc['WUCS'] += int(wucs_is_corr)
+            if method_enabled("USC"):
+                baseline_acc['USC'] += int(usc_is_corr)
+            if method_enabled("Random"):
+                baseline_acc['Random'] += int(rand_is_corr)
 
         # Output results
-        print(f"▶ LSC selection (idx={best_idx+1}, weight={lsc_calib:.3f}): {lsc_answer}")
-        print(f"\t\t\t• LSC time: {lsc_time:.4f} sec  | Correct: {lsc_is_corr}")
+        if method_enabled("LSC"):
+            print(f"▶ LSC selection (idx={best_idx+1}, weight={lsc_calib:.3f}): {lsc_answer}")
+            print(f"\t\t\t• LSC time: {lsc_time:.4f} sec  | Correct: {lsc_is_corr}")
         
         # Output 3 EOS methods results (only when use_eos is True)
         if use_eos:
-            for eos_method in eos_methods:
+            for eos_method in eos_results:
                 eos_result = eos_results[eos_method]
                 eos_eval = eos_evaluation_results[eos_method]
                 layer_info = "2nd layer" if use_eos_second else "last layer"
@@ -1274,29 +1363,25 @@ def main():
                 print(f"\t\t\t• LSC_top{k} time: {result['time']:.4f} sec  | Correct: {result['is_corr']}")
         print("")
         
-        if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
+        if method_enabled("SC") and args.dataset not in ["truthfulqa", "cnn_dailymail"]:
             print(f"▶ SC selection: {sc_answer}  | conf={sc_conf:.3f}  | time={sc_time:.4f} sec  | Correct={sc_is_corr}")
-        print(f"▶ WUCS selection: {wucs_answer}  | time={wucs_time:.4f} sec  | Correct={wucs_is_corr}")
-        print(f"▶ USC selection: {usc_answer}  | time={usc_time:.4f} sec  | Correct={usc_is_corr}")
-        print(f"▶ Random selection (idx={rand_idx+1}): {rand_answer}  | time={rand_time:.4f} sec  | Correct={rand_is_corr}")
+        if method_enabled("WUCS"):
+            print(f"▶ WUCS selection: {wucs_answer}  | time={wucs_time:.4f} sec  | Correct={wucs_is_corr}")
+        if method_enabled("USC"):
+            print(f"▶ USC selection: {usc_answer}  | time={usc_time:.4f} sec  | Correct={usc_is_corr}")
+        if method_enabled("Random"):
+            print(f"▶ Random selection (idx={rand_idx+1}): {rand_answer}  | time={rand_time:.4f} sec  | Correct={rand_is_corr}")
         
         # Average time & accuracy so far
-        print("Baseline avg times up to now:")
-        print(f"  LSC:       {baseline_times['LSC']/(qi+1):.6f} sec")
-        if use_eos:
-            for eos_method in eos_methods:
-                print(f"  {eos_method}: {baseline_times[eos_method]/(qi+1):.6f} sec")
-        
-        if enable_dynamic_topk:
-            print(f"  LSC_dynamic: {baseline_times['LSC_dynamic']/(qi+1):.6f} sec")
-        if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-            for k in LSC_TOPK_LIST:
-                print(f"  LSC_top{k}: {baseline_times[f'LSC_top{k}']/(qi+1):.6f} sec")
-        print(f"  WUCS:      {baseline_times['WUCS']/(qi+1):.6f} sec  | USC:       {baseline_times['USC']/(qi+1):.6f} sec")
-        if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-            print(f"  SC:        {baseline_times['SC']/(qi+1):.6f} sec  | Random:    {baseline_times['Random']/(qi+1):.6f} sec")
-        else:
-            print(f"  Random:    {baseline_times['Random']/(qi+1):.6f} sec")
+        avg_generation_time = generation_time_total / (qi + 1)
+        print("Shared generation avg time up to now:")
+        print(f"  generation  : {avg_generation_time:.6f} sec")
+        print("Method avg selection times up to now:")
+        for method in active_methods:
+            print(f"  {method:12s}: {baseline_times[method]/(qi+1):.6f} sec")
+        print("Method avg end-to-end times up to now:")
+        for method in active_methods:
+            print(f"  {method:12s}: {avg_generation_time + baseline_times[method]/(qi+1):.6f} sec")
         print()
         print()
 
@@ -1312,49 +1397,34 @@ def main():
                     print(f"  {method:8s}: R1={avg_rouge1:.4f}, R2={avg_rouge2:.4f}, RL={avg_rougeL:.4f}, BERT={avg_bert:.4f}")
         else:
             print("Baseline avg ACC up to now:")
-            print(f"  LSC:       {baseline_acc['LSC']/(qi+1):.4f}")
-            if use_eos:
-                for eos_method in eos_methods:
-                    print(f"  {eos_method}: {baseline_acc[eos_method]/(qi+1):.4f}")
-            if enable_dynamic_topk:
-                print(f"  LSC_dynamic: {baseline_acc['LSC_dynamic']/(qi+1):.4f}")
-            if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-                for k in LSC_TOPK_LIST:
-                    print(f"  LSC_top{k}: {baseline_acc[f'LSC_top{k}']/(qi+1):.4f}")
-            print(f"  WUCS:      {baseline_acc['WUCS']/(qi+1):.4f}    | USC:       {baseline_acc['USC']/(qi+1):.4f}")
-            if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-                print(f"  SC:        {baseline_acc['SC']/(qi+1):.4f}    | Random:    {baseline_acc['Random']/(qi+1):.4f}")
-            else:
-                print(f"  Random:    {baseline_acc['Random']/(qi+1):.4f}")
+            for method in active_methods:
+                print(f"  {method:12s}: {baseline_acc[method]/(qi+1):.4f}")
         
         # Average consistency scores so far (only for TruthfulQA)
         if args.dataset == "truthfulqa":
             print("\n===== Average consistency scores so far (consistent selection ratio) =====")
-            # Output only methods used in TruthfulQA
-            truthfulqa_methods = ["LSC", "WUCS", "USC", "Random"]
-            if enable_dynamic_topk:
-                truthfulqa_methods.append("LSC_dynamic")
-            if use_eos:
-                truthfulqa_methods.extend(eos_methods)
-                
-            for method in truthfulqa_methods:
+            for method in active_methods:
                 avg_consistency_score = ranking_scores.get(method, 0) / (qi + 1)
                 print(f"  {method:12s}: {avg_consistency_score:.4f}")
             print("=" * 50)
 
         # LSC majority prediction success/failure (only when not truthfulqa or cnn_dailymail)
         if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-            is_lsc_major = (lsc_conf == sc_conf)
-            print("LSC majority prediction success" if is_lsc_major else "LSC majority prediction failure")
+            is_lsc_major = (lsc_conf == sc_conf) if sc_conf is not None else None
+            if method_enabled("LSC") and is_lsc_major is not None:
+                print("LSC majority prediction success" if is_lsc_major else "LSC majority prediction failure")
             if use_eos:
-                for eos_method in eos_methods:
+                for eos_method in eos_results:
                     eos_result = eos_results[eos_method]
-                    is_eos_major = (eos_result["conf"] == sc_conf)
-                    print(f"{eos_method} majority prediction success" if is_eos_major else f"{eos_method} majority prediction failure")
+                    is_eos_major = (eos_result["conf"] == sc_conf) if sc_conf is not None else None
+                    if is_eos_major is not None:
+                        print(f"{eos_method} majority prediction success" if is_eos_major else f"{eos_method} majority prediction failure")
             if enable_dynamic_topk and dynamic_result is not None:
-                print(f"LSC_dynamic majority prediction success" if dynamic_result["is_major"] else f"LSC_dynamic majority prediction failure")
+                if dynamic_result["is_major"] is not None:
+                    print(f"LSC_dynamic majority prediction success" if dynamic_result["is_major"] else f"LSC_dynamic majority prediction failure")
             for k, result in lsc_topk_results.items():
-                print(f"LSC_top{k} majority prediction success" if result["is_major"] else f"LSC_top{k} majority prediction failure")
+                if result["is_major"] is not None:
+                    print(f"LSC_top{k} majority prediction success" if result["is_major"] else f"LSC_top{k} majority prediction failure")
         else:
             is_lsc_major = None
 
@@ -1363,6 +1433,7 @@ def main():
             "question": question,
             "gold_ans": gold_ans,
             "ans_list": json.dumps(ans_list, ensure_ascii=False),
+            "generation_time": generation_time,
             "lsc_answer": lsc_answer,
             "lsc_correct": lsc_is_corr,
             "lsc_time": lsc_time,
@@ -1383,7 +1454,7 @@ def main():
         
         # Add 3 EOS methods results (only when use_eos is True)
         if use_eos:
-            for eos_method in eos_methods:
+            for eos_method in eos_results:
                 eos_result = eos_results[eos_method]
                 eos_eval = eos_evaluation_results[eos_method]
                 sample_result.update({
@@ -1394,11 +1465,11 @@ def main():
                     f"{eos_method.lower()}_calib": eos_result["calib"],
                 })
                 if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
-                    is_eos_major = (eos_result["conf"] == sc_conf)
+                    is_eos_major = (eos_result["conf"] == sc_conf) if sc_conf is not None else None
                     sample_result[f"is_{eos_method.lower()}_major"] = is_eos_major
         
         # Save SC only when not truthfulqa or cnn_dailymail
-        if args.dataset not in ["truthfulqa", "cnn_dailymail"]:
+        if method_enabled("SC") and args.dataset not in ["truthfulqa", "cnn_dailymail"]:
             sample_result.update({
                 "sc_answer": sc_answer,
                 "sc_correct": sc_is_corr,
@@ -1441,29 +1512,28 @@ def main():
             # Save Rouge/BertScore for each method (only when scores are valid)
             if sample_all_rouge_scores and sample_all_bert_scores:
                 sample_result.update({
-                    "lsc_rouge1": sample_all_rouge_scores[best_idx]["rouge1"],
-                    "lsc_rouge2": sample_all_rouge_scores[best_idx]["rouge2"],
-                    "lsc_rougeL": sample_all_rouge_scores[best_idx]["rougeL"],
-                    "lsc_bertscore": sample_all_bert_scores[best_idx],
-                    "wucs_rouge1": sample_all_rouge_scores[wucs_idx]["rouge1"],
-                    "wucs_rouge2": sample_all_rouge_scores[wucs_idx]["rouge2"],
-                    "wucs_rougeL": sample_all_rouge_scores[wucs_idx]["rougeL"],
-                    "wucs_bertscore": sample_all_bert_scores[wucs_idx],
-                    "usc_rouge1": sample_all_rouge_scores[usc_idx]["rouge1"],
-                    "usc_rouge2": sample_all_rouge_scores[usc_idx]["rouge2"],
-                    "usc_rougeL": sample_all_rouge_scores[usc_idx]["rougeL"],
-                    "usc_bertscore": sample_all_bert_scores[usc_idx],
-                    "random_rouge1": sample_all_rouge_scores[rand_idx]["rouge1"],
-                    "random_rouge2": sample_all_rouge_scores[rand_idx]["rouge2"],
-                    "random_rougeL": sample_all_rouge_scores[rand_idx]["rougeL"],
-                    "random_bertscore": sample_all_bert_scores[rand_idx],
                     "all_rouge_scores": json.dumps(sample_all_rouge_scores, ensure_ascii=False),
                     "all_bert_scores": json.dumps(sample_all_bert_scores, ensure_ascii=False),
                 })
+                cnn_method_indices = {
+                    "LSC": best_idx,
+                    "WUCS": wucs_idx,
+                    "USC": usc_idx,
+                    "Random": rand_idx,
+                }
+                for method, idx in cnn_method_indices.items():
+                    if method_enabled(method) and idx is not None:
+                        prefix = method.lower()
+                        sample_result.update({
+                            f"{prefix}_rouge1": sample_all_rouge_scores[idx]["rouge1"],
+                            f"{prefix}_rouge2": sample_all_rouge_scores[idx]["rouge2"],
+                            f"{prefix}_rougeL": sample_all_rouge_scores[idx]["rougeL"],
+                            f"{prefix}_bertscore": sample_all_bert_scores[idx],
+                        })
 
                 # Add 3 EOS methods Rouge/BertScore (only when use_eos is True)
                 if use_eos:
-                    for eos_method in eos_methods:
+                    for eos_method in eos_results:
                         eos_result = eos_results[eos_method]
                         idx = eos_result["idx"]
                         sample_result.update({
@@ -1486,16 +1556,21 @@ def main():
                 # Set to 0 when score calculation failed
                 print("⚠️ Rouge/BertScore calculation failed, setting to 0.")
                 sample_result.update({
-                    "lsc_rouge1": 0.0, "lsc_rouge2": 0.0, "lsc_rougeL": 0.0, "lsc_bertscore": 0.0,
-                    "wucs_rouge1": 0.0, "wucs_rouge2": 0.0, "wucs_rougeL": 0.0, "wucs_bertscore": 0.0,
-                    "usc_rouge1": 0.0, "usc_rouge2": 0.0, "usc_rougeL": 0.0, "usc_bertscore": 0.0,
-                    "random_rouge1": 0.0, "random_rouge2": 0.0, "random_rougeL": 0.0, "random_bertscore": 0.0,
                     "all_rouge_scores": "[]",
                     "all_bert_scores": "[]",
                 })
+                for method in ["LSC", "WUCS", "USC", "Random"]:
+                    if method_enabled(method):
+                        prefix = method.lower()
+                        sample_result.update({
+                            f"{prefix}_rouge1": 0.0,
+                            f"{prefix}_rouge2": 0.0,
+                            f"{prefix}_rougeL": 0.0,
+                            f"{prefix}_bertscore": 0.0,
+                        })
                 
                 if use_eos:
-                    for eos_method in eos_methods:
+                    for eos_method in eos_results:
                         sample_result.update({
                             f"{eos_method.lower()}_rouge1": 0.0,
                             f"{eos_method.lower()}_rouge2": 0.0,
@@ -1513,14 +1588,7 @@ def main():
         
         # Add independent consistency scores only for TruthfulQA
         if args.dataset == "truthfulqa":
-            # Save only for methods used in TruthfulQA
-            truthfulqa_methods = ["LSC", "WUCS", "USC", "Random"]
-            if enable_dynamic_topk:
-                truthfulqa_methods.append("LSC_dynamic")
-            if use_eos:
-                truthfulqa_methods.extend(eos_methods)
-                
-            for method in truthfulqa_methods:
+            for method in active_methods:
                 sample_result[f"consistency_score_{method}"] = sample_ranking_scores.get(method, 0.0)
         
         results.append(sample_result)
@@ -1538,6 +1606,9 @@ def main():
     elif args.dataset == "cnn_dailymail":
         filename_suffix += "_with_rouge_bert"
     
+    os.makedirs("results", exist_ok=True)
+    os.makedirs("responses", exist_ok=True)
+
     df_out.to_csv(f"results/{args.dataset}_evaluation_results{Repo_name}{filename_suffix}_{args.num_path}Paths_{args.seed}.csv", index=False)
     print(f"\n✅ Saved all results to {args.dataset}_evaluation_results{Repo_name}{filename_suffix}_{args.num_path}Paths_{args.seed}.csv (samples: {total})\n")
 
@@ -1550,62 +1621,46 @@ def main():
 
     # Summary output
     print("===== Summary =====")
+    avg_generation_time = generation_time_total / total if total else 0.0
+    print(f"Shared generation avg time: {avg_generation_time:.4f} sec")
     if args.dataset == "cnn_dailymail":
-        print(f"{'Method':15s} | {'Rouge1':8s} | {'Rouge2':8s} | {'RougeL':8s} | {'BertScore':10s} | {'Avg Time':10s}")
-        print("-" * 80)
+        print(f"{'Method':15s} | {'Rouge1':8s} | {'Rouge2':8s} | {'RougeL':8s} | {'BertScore':10s} | {'Select Time':11s} | {'E2E Time':10s}")
+        print("-" * 95)
         
         for method in all_methods:
             if method in rouge_scores and method in bert_scores:
                 avg_time = baseline_times[method] / total
+                e2e_time = avg_generation_time + avg_time
                 avg_rouge1 = rouge_scores[method]["rouge1"] / total
                 avg_rouge2 = rouge_scores[method]["rouge2"] / total
                 avg_rougeL = rouge_scores[method]["rougeL"] / total
                 avg_bert = bert_scores[method] / total
-                print(f"{method:15s} | {avg_rouge1:.6f} | {avg_rouge2:.6f} | {avg_rougeL:.6f} | {avg_bert:.8f} | {avg_time:.4f} sec")
+                print(f"{method:15s} | {avg_rouge1:.6f} | {avg_rouge2:.6f} | {avg_rougeL:.6f} | {avg_bert:.8f} | {avg_time:.4f} sec | {e2e_time:.4f} sec")
     elif args.dataset == "truthfulqa":
-        print(f"{'Method':15s} | {'Accuracy':10s} | {'Avg Time':10s} | {'Consistency':10s}")
-        print("-" * 65)
-        
-        # Output only methods used in TruthfulQA
-        truthfulqa_methods = ["LSC", "WUCS", "USC", "Random"]
-        if enable_dynamic_topk:
-            truthfulqa_methods.append("LSC_dynamic")
-        if use_eos:
-            truthfulqa_methods.extend(eos_methods)
-            
-        for method in truthfulqa_methods:
+        print(f"{'Method':15s} | {'Accuracy':10s} | {'Select Time':11s} | {'E2E Time':10s} | {'Consistency':10s}")
+        print("-" * 82)
+
+        for method in active_methods:
             avg_time = baseline_times[method] / total
+            e2e_time = avg_generation_time + avg_time
             acc_rate = baseline_acc[method] / total
             consistency_rate = ranking_scores[method] / total
-            print(f"{method:15s} | {acc_rate:.4f} | {avg_time:.4f} sec | {consistency_rate:.4f}")
+            print(f"{method:15s} | {acc_rate:.4f} | {avg_time:.4f} sec | {e2e_time:.4f} sec | {consistency_rate:.4f}")
     else:
-        print(f"{'Method':15s} | {'Accuracy':10s} | {'Avg Time':10s}")
-        print("-" * 45)
+        print(f"{'Method':15s} | {'Accuracy':10s} | {'Select Time':11s} | {'E2E Time':10s}")
+        print("-" * 62)
         
         # Output all methods for other datasets (including SC)
-        for method in all_methods:
+        for method in active_methods:
             avg_time = baseline_times[method] / total
+            e2e_time = avg_generation_time + avg_time
             acc_rate = baseline_acc[method] / total
-            print(f"{method:15s} | {acc_rate:.4f} | {avg_time:.4f} sec")
-        
-        # Also output summary for each LSC_TOPK value
-        for k in LSC_TOPK_LIST:
-            method = f"LSC_top{k}"
-            avg_time = baseline_times[method] / total
-            acc_rate = baseline_acc[method] / total
-            print(f"{method:15s} | {acc_rate:.4f} | {avg_time:.4f} sec")
+            print(f"{method:15s} | {acc_rate:.4f} | {avg_time:.4f} sec | {e2e_time:.4f} sec")
 
     # Output independent consistency results only for TruthfulQA
     if args.dataset == "truthfulqa":
         print("\n===== Independent Consistency Results (Consistent Selection Ratio) =====")
-        # Sort only methods used in TruthfulQA
-        truthfulqa_methods = ["LSC", "WUCS", "USC", "Random"]
-        if enable_dynamic_topk:
-            truthfulqa_methods.append("LSC_dynamic")
-        if use_eos:
-            truthfulqa_methods.extend(eos_methods)
-            
-        sorted_methods = sorted(truthfulqa_methods, key=lambda x: ranking_scores.get(x, 0), reverse=True)
+        sorted_methods = sorted(active_methods, key=lambda x: ranking_scores.get(x, 0), reverse=True)
         print(f"{'Rank':^4} | {'Method':^12} | {'Consistency Ratio':^16} | {'Total Score':^12}")
         print("-" * 52)
         for rank, method in enumerate(sorted_methods, 1):
@@ -1622,7 +1677,7 @@ def main():
         # Calculate cache efficiency (API calls that would have been made without caching vs actual API calls)
         total_samples = total
         # Each sample has methods_count * 1 API call for truth evaluation (no info evaluation)
-        methods_count = len(all_methods)
+        methods_count = len(active_methods)
         without_cache_calls = total_samples * 1 * methods_count
         actual_calls = len(eval_cache["truth"])
         saved_calls = without_cache_calls - actual_calls

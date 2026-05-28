@@ -2,79 +2,6 @@ import time
 from typing import List, Optional
 import torch
 import torch.nn.functional as F
-import numpy as np
-def dynamic_topk_lsc(weights, ans_list, temp=0.5):
-    """
-    Dynamic TopK LSC: Calculate from top2 to topN each,
-    find the point with the largest decrease in max_sim_score and use K right before that point
-    """
-    num_paths = len(ans_list)
-    max_k = min(num_paths - 1, num_paths)  # Set maximum K
-    
-    max_scores = []
-    best_indices = []
-    avg_weights_list = []
-    
-    # Calculate from K=2 to max_k
-    for k in range(2, max_k + 1):
-        # Select only top K weights from each row and average
-        avg_weight_topk = np.array([
-            np.mean(np.sort(row)[-k:])
-            for row in weights
-        ])
-        
-        best_idx = int(np.argmax(avg_weight_topk))
-        max_score = avg_weight_topk[best_idx]
-        
-        avg_weights_list.append(avg_weight_topk)
-        max_scores.append(max_score)
-        best_indices.append(best_idx)
-    
-    # Find point with largest decrease in max_sim_score
-    optimal_k = max_k  # Default: last K
-    largest_drop = 0.0
-    largest_drop_idx = -1
-    
-    # Calculate differences between consecutive points to find largest decrease
-    for i in range(1, len(max_scores)):
-        score_diff = max_scores[i-1] - max_scores[i]  # Decrease from previous to current point
-        if score_diff > largest_drop:
-            largest_drop = score_diff
-            largest_drop_idx = i
-    
-    # Select K right before the point with largest decrease
-    if largest_drop_idx != -1 and largest_drop > 0:
-        optimal_k = largest_drop_idx + 1  # largest_drop_idx is where decrease occurred, so optimal is right before
-    
-    # Select result corresponding to optimal_k
-    k_idx = optimal_k - 2  # Convert to 0-based index (K=2 is index 0)
-    if k_idx >= len(best_indices):
-        k_idx = len(best_indices) - 1
-    elif k_idx < 0:
-        k_idx = 0
-    
-    selected_idx = best_indices[k_idx]
-    selected_answer = ans_list[selected_idx]
-    selected_conf = ans_list.count(selected_answer) / len(ans_list)
-    selected_calib = avg_weights_list[k_idx][selected_idx]
-    
-    # Add decrease information
-    score_diffs = []
-    for i in range(1, len(max_scores)):
-        score_diffs.append(max_scores[i-1] - max_scores[i])
-    
-    return {
-        "answer": selected_answer,
-        "optimal_k": optimal_k,
-        "selected_idx": selected_idx,
-        "conf": selected_conf,
-        "calib": selected_calib,
-        "max_scores": max_scores,
-        "score_diffs": score_diffs,
-        "largest_drop": largest_drop,
-        "largest_drop_idx": largest_drop_idx,
-        "all_k_results": list(zip(range(2, max_k + 1), max_scores, best_indices))
-    }
 def generate_with_special_tokens( 
     self,
     inputs: torch.Tensor,
@@ -90,6 +17,8 @@ def generate_with_special_tokens(
     # Basic setup
     # ──────────────────────────────────────────────────────────
     self.eval()
+    if hasattr(inputs, "input_ids"):
+        inputs = inputs.input_ids
     base_device = inputs.device              
     cpu_device = torch.device("cpu")
 
@@ -104,6 +33,7 @@ def generate_with_special_tokens(
     eos_token_id   = kwargs.get("eos_token_id",  self.config.eos_token_id)
     output_scores  = kwargs.get("output_scores",  True)
     return_dict    = kwargs.get("return_dict_in_generate", True)
+    attention_mask = kwargs.get("attention_mask")
 
     # Batch expansion ---------------------------------------------------------
     orig_bs, ctx_len = inputs.shape
@@ -113,11 +43,20 @@ def generate_with_special_tokens(
             .expand(orig_bs, num_return_sequences, ctx_len)
             .reshape(-1, ctx_len)
         )
+        if attention_mask is not None:
+            attention_mask = (
+                attention_mask.unsqueeze(1)
+                .expand(orig_bs, num_return_sequences, ctx_len)
+                .reshape(-1, ctx_len)
+            )
     batch_size = inputs.size(0)
 
     # State variables ---------------------------------------------------------
     input_ids      = inputs
-    attention_mask = inputs.ne(pad_token_id).to(torch.bool)   # bool mask
+    if attention_mask is None:
+        attention_mask = torch.ones_like(inputs, dtype=torch.bool, device=base_device)
+    else:
+        attention_mask = attention_mask.to(device=base_device, dtype=torch.bool)
     final_max_len  = ctx_len + max_new_tokens if max_length is None else max_length
 
     past_key_values = None
@@ -218,7 +157,7 @@ def generate_with_special_tokens(
             probs = torch.softmax(logits, dim=-1, dtype=torch.float32)
             next_tokens = torch.argmax(logits, dim=-1)
 
-        if output_scores and cur_len > ctx_len:
+        if output_scores:
             prob_list.append(probs.gather(1, next_tokens[:, None]).squeeze(1).cpu())
 
         # Unify tensors to base_device

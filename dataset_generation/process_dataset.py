@@ -106,7 +106,7 @@ def map_numbers_to_letters(record, is_alphabet=True):
     }
 
 def unbox_assistant(record, remove_dollar: bool = False):
-    """
+    r"""
     1) \\boxed{X} → X
     2) Remove '\' before numbers/uppercase letters (\10 → 10, \A → A)
     3) (Only when remove_dollar=True) $number$ → number
@@ -243,7 +243,7 @@ def main():
         for rec in processed:
             out = {
                 "question_id":   f"{qid_prefix}{rec['question_id']}",
-                "response_id":   f"{rec['response_id']}",
+                "response_id":   f"{rec['id']}",
                 "system":        system_prompt,
                 "user":          rec["user"],
                 "assistant":     rec["assistant"],

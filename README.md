@@ -25,12 +25,12 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install flash-attn --no-build-isolation
 
 # 2) Run inference (example)
-MODEL=jeongseokoh/LatentSC_llama3.1_8b DATASET=MATH bash run.sh
+MODEL=jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens DATASET=MATH bash run.sh
 ```
 
 If FlashAttention2 is not available, you can switch attention implementation:
 ```bash
-ATTN_IMPL=sdpa MODEL=jeongseokoh/LatentSC_llama3.1_8b DATASET=MATH bash run.sh
+ATTN_IMPL=sdpa MODEL=jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens DATASET=MATH bash run.sh
 ```
 
 ---
@@ -76,12 +76,15 @@ bash train.sh
 
 # Change model or training options
 MODEL=llama3.1_8b EPOCH=3 AGGR=mean REMOVE_EOS=True bash train.sh
+
+# Use explicit special token strings instead of <|Summary1|>...
+SPECIAL_TOKENS="<|Summary1|>,<|Summary2|>,<|Summary3|>,<|Summary4|>,<|Summary5|>,<|Summary6|>" bash train.sh
 ```
 
 Push to HF Hub after training:
 ```bash
 PUSH_TO_HUB=1 \
-HF_REPO_ID=yourname/LatentSC_llama3.1_8b \
+HF_REPO_ID=yourname/LatentSC_qwen3_8b_6SummaryTokens \
 HUGGINGFACE_HUB_TOKEN=hf_xxx \
 bash train.sh
 ```
@@ -96,17 +99,37 @@ Notes:
 
 ```bash
 # Use a Hugging Face repo directly
-MODEL=jeongseokoh/LatentSC_llama3.1_8b DATASET=MATH bash run.sh
+MODEL=jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens DATASET=MATH bash run.sh
 
 # Adjust knobs
 NUM_PATH=10 LSC_TEMP=0.5 REMOVE_EOS=True bash run.sh
+
+# Run only selected methods
+METHODS=LSC,SC,WUCS bash run.sh
+METHODS=LSC,LSC_dynamic,LSC_top5 bash run.sh
 ```
 
 If the HF repo contains `config.json` with LSC fields, inference will auto-load:
 - `lsc_num_special_tokens`
+- `lsc_special_tokens` or `lsc_special_token_prefix`
 - `lsc_aggr`
 - `lsc_remove_eos`
-- `lsc_temp`
+- `lsc_score_temp`
+
+Available method names:
+- `LSC`
+- `SC` (excluded for TruthfulQA generation and CNN/DailyMail)
+- `WUCS`
+- `USC`
+- `Random`
+- `LSC_dynamic`
+- `LSC_topK` such as `LSC_top5`
+- `EOS_pred`, `EOS_first`, `EOS_special` when `USE_EOS=True`
+
+Timing output separates shared path generation from selection/reranking:
+- `Shared generation avg time`: one shared generation pass used by all methods
+- `Select Time`: method-specific selection/reranking time
+- `E2E Time`: shared generation time + method selection time
 
 ---
 
@@ -117,12 +140,14 @@ If you need to populate `config.json` in your HF repo:
 ```bash
 HUGGINGFACE_HUB_TOKEN=hf_xxx \
 python3 tools/sync_hf_config.py \
-  --repo yourname/LatentSC_llama3.1_8b \
+  --repo yourname/LatentSC_qwen3_8b_6SummaryTokens \
   --num_special_tokens 6 \
   --aggr mean \
   --remove_eos True \
-  --lsc_temp 0.5
+  --lsc_score_temp 0.5
 ```
+
+For non-default token strings, pass `--special_tokens` or set `SPECIAL_TOKENS`.
 
 ---
 
@@ -136,7 +161,7 @@ python3 tools/sync_hf_config.py \
 ## Public release hygiene
 
 This repository ships **only public-safe files**. The following are excluded via `.gitignore` and removed from the working tree:
-- `logs/`, `outputs/`
+- `logs/`, `outputs/`, `results/`, `responses/`
 - Generated datasets (`dataset_generation/*.jsonl`, `raw_data_*`, `proc_data_*`, `undersampled_*`)
 - HF cache (`.hf_home/`)
 
@@ -148,7 +173,9 @@ If you need to reproduce results, regenerate datasets locally with the scripts a
 
 Common environment variables:
 - `HUGGINGFACE_HUB_TOKEN` or `HF_TOKEN` for gated models / uploads
-- `MODEL`, `DATASET`, `NUM_PATH`, `LSC_TEMP`, `REMOVE_EOS`, `AGGR`, `NUM_SPECIAL_TOKENS`
+- `MODEL`, `DATASET`, `MAX_SAMPLES`, `NUM_PATH`, `METHODS`, `LSC_TEMP`, `REMOVE_EOS`, `AGGR`, `NUM_SPECIAL_TOKENS`, `SPECIAL_TOKENS`
+- `USE_EOS`, `USE_EOS_SECOND`, `ATTN_IMPL`, `PYTHON_BIN`
+- Training: `EPOCH`, `DATA_PATH`, `USE_MIXED_DATA`, `PUSH_TO_HUB`, `HF_REPO_ID`, `OUTPUT_DIR`
 
 ---
 

@@ -18,6 +18,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str,   default="llama3.1_8b")
 parser.add_argument('--num_special_tokens', type=int, default=6,
                     help="Number of special Summary tokens to use")
+parser.add_argument('--special_tokens', type=str, default=os.environ.get("SPECIAL_TOKENS", ""),
+                    help="Comma-separated explicit special tokens. Overrides Summary token construction.")
 parser.add_argument('--epoch', type=int,   default=3)
 parser.add_argument('--aggr', type=str, default="last", choices=["mean", "last"],
                     help="Aggregation method for feature extraction")
@@ -30,6 +32,8 @@ parser.add_argument('--hf_repo_id', type=str, default=os.environ.get("HF_REPO_ID
                     help="Hugging Face repo id (e.g., username/LatentSC_llama3)")
 parser.add_argument('--output_dir', type=str, default=os.environ.get("OUTPUT_DIR"),
                     help="Local output directory for saving the final model/tokenizer")
+parser.add_argument('--data_path', type=str, default=os.environ.get("DATA_PATH"),
+                    help="Optional JSONL data file. If set, train directly from this file.")
 
 args = parser.parse_args()
 
@@ -37,7 +41,11 @@ args = parser.parse_args()
 remove_eos = args.remove_eos == "True"
 push_to_hub = str(args.push_to_hub).lower() in ["1", "true", "yes", "y"]
 # Special tokens 정의
-special_tokens_only = [f"<|Summary{i}|>" for i in range(1, args.num_special_tokens + 1)]
+if args.special_tokens.strip():
+    special_tokens_only = [t.strip() for t in args.special_tokens.split(",") if t.strip()]
+    args.num_special_tokens = len(special_tokens_only)
+else:
+    special_tokens_only = [f"<|Summary{i}|>" for i in range(1, args.num_special_tokens + 1)]
 
 # Model name 설정
 model_name = args.model
@@ -77,11 +85,17 @@ if "llama" in model_name:
 elif "qwen" in model_name:
     family = "qwen"
 records = []
-for ds in DATASETS:
-    path = Path(f"dataset_generation/undersampled_{ds}_{family}.jsonl")
+if args.data_path:
+    path = Path(args.data_path)
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             records.append(json.loads(line))
+else:
+    for ds in DATASETS:
+        path = Path(f"dataset_generation/undersampled_{ds}_{family}.jsonl")
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                records.append(json.loads(line))
 
 qid2recs = {}
 for rec in records:
@@ -173,10 +187,14 @@ print(f"모델 로드 완료: {MODEL_NAME}")
 model.config.pad_token_id = tokenizer.pad_token_id
 print(f"모델 pad_token_id 설정 완료: {model.config.pad_token_id}")
 model.config.lsc_num_special_tokens = args.num_special_tokens
-model.config.lsc_special_token_prefix = "Summary"
+if not args.special_tokens.strip():
+    model.config.lsc_special_token_prefix = "Summary"
+else:
+    model.config.lsc_special_tokens = special_tokens_only
 model.config.lsc_aggr = args.aggr
 model.config.lsc_remove_eos = remove_eos
-model.config.lsc_temp = TEMPERATURE
+model.config.lsc_train_temp = TEMPERATURE
+model.config.lsc_score_temp = 0.5
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -273,16 +291,20 @@ def supervised_contrastive_loss(features: torch.Tensor,
     exp_logits = torch.exp(logits) * (~mask_self)
     log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-12)
 
-    denom = mask_pos.sum(dim=1).clamp(min=1)
-    mean_log_prob_pos = (mask_pos * log_prob).sum(dim=1) / denom
-    loss = - mean_log_prob_pos
+    pos_counts = mask_pos.sum(dim=1)
+    valid = pos_counts > 0
+    if not valid.any():
+        return feats.sum() * 0.0
+
+    mean_log_prob_pos = (mask_pos * log_prob).sum(dim=1) / pos_counts.clamp(min=1)
+    loss = -mean_log_prob_pos[valid]
     return loss.mean()
 
 params = [inp_embed.weight]
 
 
 
-optimizer = torch.optim.AdamW(params, lr=LR, weight_decay=0.01)
+optimizer = torch.optim.AdamW(params, lr=LR, weight_decay=0.0)
 
 train_loader = DataLoader(
     GroupDataset(train_groups, tokenizer, SPECIAL_TOKEN),

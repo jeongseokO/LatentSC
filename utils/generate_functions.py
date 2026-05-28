@@ -8,7 +8,15 @@ import re
 import json
 import gc
 from typing import List
-client = OpenAI(api_key="") 
+
+client = None
+
+
+def get_openai_client():
+    global client
+    if client is None:
+        client = OpenAI()
+    return client
 
 def extract_boolean(response_str):
     match = re.search(r'\b(yes|no)\b', response_str, re.IGNORECASE)
@@ -42,7 +50,7 @@ Respond with “#### yes” if it does, or “#### no” if it doesn't.
     ]
 
     # 3) GPT 호출
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4.1-mini",
         messages=prompt,
         seed=42
@@ -86,7 +94,7 @@ Let's think step by step."""
         }
     ]
 
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4.1",
         messages=prompt,
         seed=42
@@ -124,12 +132,21 @@ def USC_generate(
     chat_kwargs = dict(add_generation_prompt=True, return_tensors="pt")
     if model_name == "qwen3_8b":
         chat_kwargs["enable_thinking"] = False
-    input_ids = tokenizer.apply_chat_template(messages, **chat_kwargs).to(device)
+    chat_inputs = tokenizer.apply_chat_template(messages, **chat_kwargs).to(device)
+    if hasattr(chat_inputs, "input_ids"):
+        input_ids = chat_inputs.input_ids
+        attention_mask = chat_inputs.get("attention_mask", torch.ones_like(input_ids))
+    else:
+        input_ids = chat_inputs
+        attention_mask = torch.ones_like(input_ids)
 
     outputs = model.generate(
         input_ids,
+        attention_mask=attention_mask,
         max_new_tokens=256,
         do_sample=False,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
         return_dict_in_generate=True,
     )
 
@@ -139,10 +156,16 @@ def USC_generate(
     ).strip()
     m = re.search(r"Path\s*(\d+)", usc_out, re.IGNORECASE)
     if m:
-        usc_index = max(int(m.group(1)) - 1, 0)
+        selected = int(m.group(1))
     else:
         m = re.search(r"####\s*(\d+)", usc_out)
-        usc_index = int(m.group(1)) if m else 0
+        selected = int(m.group(1)) if m else 0
+    if 1 <= selected <= len(responses):
+        usc_index = selected - 1
+    elif 0 <= selected < len(responses):
+        usc_index = selected
+    else:
+        usc_index = 0
 
     torch.cuda.synchronize(device)
     peak_bytes = torch.cuda.max_memory_allocated(device)

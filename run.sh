@@ -30,16 +30,18 @@ if [[ -n "$HF_TOKEN" && -z "$HUGGINGFACE_HUB_TOKEN" ]]; then
   HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
 fi
 
-MODEL="${MODEL:-/workspace/LatentSC_official/outputs/llama3.1_8b_with_summary}"
+MODEL="${MODEL:-jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens}"
 DATASET="${DATASET:-MATH}"
-MAX_SAMPLES="${MAX_SAMPLES:-1000}"
+MAX_SAMPLES="${MAX_SAMPLES:-100}"
 NUM_SPECIAL_TOKENS="${NUM_SPECIAL_TOKENS:-6}"
+SPECIAL_TOKENS="${SPECIAL_TOKENS:-}"
 NUM_PATH="${NUM_PATH:-10}"
 AGGR="${AGGR:-mean}"
 LSC_TEMP="${LSC_TEMP:-0.5}"
 REMOVE_EOS="${REMOVE_EOS:-True}"
 USE_EOS="${USE_EOS:-False}"
 USE_EOS_SECOND="${USE_EOS_SECOND:-False}"
+METHODS="${METHODS:-ALL}"
 SEED="${SEED:-42}"
 
 PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
@@ -48,6 +50,7 @@ PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
   "$PYTHON_BIN" "${REPO_ROOT}/inference.py" \
   --model "$MODEL" \
   --num_special_tokens "$NUM_SPECIAL_TOKENS" \
+  --special_tokens "$SPECIAL_TOKENS" \
   --num_path "$NUM_PATH" \
   --aggr "$AGGR" \
   --dataset "$DATASET" \
@@ -56,4 +59,5 @@ PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
   --remove_eos "$REMOVE_EOS" \
   --use_eos "$USE_EOS" \
   --use_eos_second "$USE_EOS_SECOND" \
+  --methods "$METHODS" \
   --seed "$SEED"

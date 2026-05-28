@@ -104,7 +104,7 @@ def main() -> None:
     # Carry over LSC config fields when present
     tcfg = trained_model.config
     bcfg = backbone_model.config
-    for key in ("lsc_num_special_tokens", "lsc_special_token_prefix", "lsc_aggr", "lsc_remove_eos", "lsc_temp"):
+    for key in ("lsc_num_special_tokens", "lsc_special_token_prefix", "lsc_special_tokens", "lsc_aggr", "lsc_remove_eos", "lsc_score_temp", "lsc_train_temp"):
         if hasattr(tcfg, key):
             setattr(bcfg, key, getattr(tcfg, key))
     if not hasattr(bcfg, "lsc_num_special_tokens"):

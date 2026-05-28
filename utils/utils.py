@@ -64,7 +64,7 @@ def extract_alphabet(text):
             return answer
     return "No Match"
 
-ANS_RE = re.compile(r"#### (\$?\-?[0-9\.\,]+)")
+ANS_RE = re.compile(r"####\s*\{?\s*(\$?\-?[0-9\.\,]+)\s*\}?")
 INVALID_ANS = "No Match"
 
 def extract_number(completion):

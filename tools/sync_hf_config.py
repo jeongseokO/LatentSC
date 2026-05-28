@@ -29,9 +29,12 @@ def main() -> None:
     parser.add_argument("--repo", default=os.environ.get("HF_REPO_ID", "jeongseokoh/LatentSC_llama3.1_8b"))
     parser.add_argument("--base_model", default=os.environ.get("BASE_MODEL"))
     parser.add_argument("--num_special_tokens", type=int, default=int(os.environ.get("NUM_SPECIAL_TOKENS", "6")))
+    parser.add_argument("--special_tokens", default=os.environ.get("SPECIAL_TOKENS", ""))
     parser.add_argument("--aggr", default=os.environ.get("AGGR", "mean"))
     parser.add_argument("--remove_eos", default=os.environ.get("REMOVE_EOS", "True"))
-    parser.add_argument("--lsc_temp", type=float, default=float(os.environ.get("LSC_TEMP", "0.5")))
+    parser.add_argument("--lsc_score_temp", type=float, default=float(os.environ.get("LSC_TEMP", "0.5")))
+    parser.add_argument("--lsc_temp", dest="lsc_score_temp", type=float, default=argparse.SUPPRESS, help="Deprecated alias for --lsc_score_temp")
+    parser.add_argument("--lsc_train_temp", type=float, default=float(os.environ.get("LSC_TRAIN_TEMP", "0.07")))
     parser.add_argument("--push", default=os.environ.get("PUSH_TO_HUB", "1"))
     parser.add_argument("--hf_home", default=os.environ.get("HF_HOME", "/workspace/.hf_home"))
     args = parser.parse_args()
@@ -45,11 +48,17 @@ def main() -> None:
     os.environ.setdefault("HF_HOME", args.hf_home)
 
     cfg = AutoConfig.from_pretrained(base_model, trust_remote_code=True, token=token)
-    cfg.lsc_num_special_tokens = args.num_special_tokens
-    cfg.lsc_special_token_prefix = "Summary"
+    if args.special_tokens.strip():
+        special_tokens = [t.strip() for t in args.special_tokens.split(",") if t.strip()]
+        cfg.lsc_num_special_tokens = len(special_tokens)
+        cfg.lsc_special_tokens = special_tokens
+    else:
+        cfg.lsc_num_special_tokens = args.num_special_tokens
+        cfg.lsc_special_token_prefix = "Summary"
     cfg.lsc_aggr = args.aggr
     cfg.lsc_remove_eos = remove_eos
-    cfg.lsc_temp = args.lsc_temp
+    cfg.lsc_score_temp = args.lsc_score_temp
+    cfg.lsc_train_temp = args.lsc_train_temp
     cfg.base_model = base_model
 
     with tempfile.TemporaryDirectory() as tmpdir:
