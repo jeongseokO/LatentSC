@@ -15,93 +15,37 @@ const vectors = [[1, .1, .1], [1, .02, .03], [1, -.08, .06], [1, .04, -.09], [-.
 const similarities = vectors.map((a) => vectors.map((b) => a.reduce((sum, x, k) => sum + x * b[k], 0)));
 const scores = similarities.map((row, i) => row.reduce((sum, value, j) => sum + (i === j ? 0 : Math.exp(value / .5)), 0) / (row.length - 1));
 const winner = scores.indexOf(Math.max(...scores));
-let stage = 2;
-let focusedCandidate = winner;
-let replayTimers = [];
+let focusedCandidate = null;
 let results;
 
 function drawHero() {
   const svg = $('#hero-responses');
   svg.innerHTML = letters.map((letter, i) => {
     const y = 70 + i * 43;
-    return `<g><rect x="5" y="${y}" width="143" height="32" rx="4" fill="#fff" stroke="#ccd5e1"/><rect x="6" y="${y + 1}" width="27" height="30" rx="3" fill="#f1f4fb"/><text x="20" y="${y + 21}" text-anchor="middle" fill="#435bd5" font-family="Arial,sans-serif" font-size="13">${letter}</text><path d="M44 ${y + 12} h${75 - i * 3} M44 ${y + 21} h${43 + i * 3}" stroke="#a6b2be" stroke-width="3" stroke-linecap="round"/><path d="M159 ${y + 16} H181" stroke="#8997a2" fill="none" marker-end="url(#arrow)"/>${Array.from({length: 6}, (_, j) => `<rect x="${196 + 23 * j}" y="${y + 8}" width="15" height="17" rx="2" fill="${i < 4 ? '#435bd5' : '#8d9ccb'}" opacity="${.65 + j * .05}"/>`).join('')}</g>`;
+    return `<g><rect x="5" y="${y}" width="143" height="32" rx="4" fill="#fff" stroke="#ccd5e1"/><text x="76" y="${y + 21}" text-anchor="middle" fill="#435bd5" font-family="Arial,sans-serif" font-size="13">Response ${letter}</text><path d="M159 ${y + 16} H181" stroke="#8997a2" fill="none" marker-end="url(#arrow)"/>${Array.from({length: 6}, (_, j) => `<rect x="${196 + 23 * j}" y="${y + 8}" width="15" height="17" rx="2" fill="#435bd5"/>`).join('')}</g>`;
   }).join('');
 }
 
-function setStage(nextStage) {
-  stage = nextStage;
-  const descriptions = [
-    'Sample independent responses from the base LLM. The paper uses 10 candidates per question; this example shows six.',
-    'Append six learned summary tokens to each response. Reuse its KV cache, then mean-pool and normalize the final-layer token states.',
-    'Compare response representations by cosine similarity. Average exponentially weighted similarities to the other candidates, then select the largest score.'
-  ];
-  $('.step-tabs').querySelectorAll('button').forEach((button, index) => {
-    button.setAttribute('aria-selected', String(index === stage));
-    button.tabIndex = index === stage ? 0 : -1;
-  });
-  $('#demo-panel').setAttribute('aria-labelledby', ['tab-sample', 'tab-encode', 'tab-select'][stage]);
-  $('#stage-description').textContent = descriptions[stage];
-  renderDemo();
-}
-
 function renderDemo() {
-  $('#candidates').innerHTML = responses.map((text, i) => `<button type="button" class="candidate ${i === focusedCandidate ? 'selected' : ''} ${i > 3 ? 'outlier' : ''}" data-candidate="${i}" aria-pressed="${i === focusedCandidate}" aria-label="Inspect response ${letters[i]}: ${text}"><span class="candidate-letter">${letters[i]}</span><span>${text}</span></button>`).join('');
-  $('#encoding-title').textContent = ['Independent samples', 'Summary-token encoding', 'Pairwise similarity'][stage];
-  if (stage === 0) {
-    $('#encoding-content').innerHTML = `<div class="sampling-sketch">${letters.map((letter, i) => `<div class="sample-line"><span>${letter}</span><i style="width:${65 + i * 11}%"></i></div>`).join('')}</div><p class="matrix-note">Same question · diverse reasoning paths</p>`;
-    $('#selection-content').innerHTML = '<p class="pending-stage">Generation supplies the candidates.<br>Continue to Encode to see how LSC represents them.</p>';
-  } else if (stage === 1) {
-    $('#encoding-content').innerHTML = `<div class="token-stack">${letters.map((letter) => `<div class="token-row"><span>${letter}</span>${Array.from({length: 6}, (_, i) => `<span class="mini-token">S${i + 1}</span>`).join('')}</div>`).join('')}</div><div class="pool-arrow" aria-hidden="true">↓</div><div class="embedding-output">Mean pool → normalize → zᵢ</div>`;
-    $('#selection-content').innerHTML = '<p class="pending-stage">Each response now has a compact representation.<br>Continue to Select to compare agreement.</p>';
-  } else {
-    $('#encoding-content').innerHTML = `<table class="matrix" aria-label="Constructed pairwise cosine similarities; diagonal excluded from selection scores"><thead><tr><th></th>${letters.map((letter) => `<th scope="col">${letter}</th>`).join('')}</tr></thead><tbody>${similarities.map((row, i) => `<tr class="${i === focusedCandidate ? 'focus-row' : ''}"><th scope="row">${letters[i]}</th>${row.map((value, j) => {
+  $('#candidates').innerHTML = responses.map((text, i) => `<button type="button" class="candidate ${i === focusedCandidate ? 'selected' : ''}" data-candidate="${i}" aria-pressed="${i === focusedCandidate}" aria-controls="similarity-content" aria-label="Inspect response ${letters[i]}: ${text}"><span class="candidate-letter">${letters[i]}</span><span>${text}</span></button>`).join('');
+  $('#encoding-content').innerHTML = letters.map((letter, i) => `<div class="encoding-row ${i === focusedCandidate ? 'focused-encoding' : ''}"><span class="encoding-response">Response ${letter}</span><span class="appended-tokens">${Array.from({length: 6}, (_, j) => `<span class="mini-token">S${j + 1}</span>`).join('')}</span><span class="encoding-operation">LLM → mean → normalize</span><strong class="response-embedding">z<sub>${letter}</sub></strong></div>`).join('');
+  $('#similarity-content').innerHTML = `<table class="matrix" aria-label="Constructed pairwise cosine similarities; diagonal excluded from selection scores"><thead><tr><th></th>${letters.map((letter) => `<th scope="col">${letter}</th>`).join('')}</tr></thead><tbody>${similarities.map((row, i) => `<tr class="${i === focusedCandidate ? 'focus-row' : ''}"><th scope="row">${letters[i]}</th>${row.map((value, j) => {
       const intensity = Math.max(0, Math.min(1, value));
       const color = value > .6 ? `rgb(${Math.round(222 - intensity * 155)},${Math.round(232 - intensity * 141)},${Math.round(249 - intensity * 36)})` : '#f3e5db';
       return `<td class="${i === j ? 'diagonal' : ''}" style="${i === j ? '' : `background:${color};color:${value > .82 ? '#fff' : '#34434e'}`}" title="${letters[i]} / ${letters[j]}: ${value.toFixed(4)}${i === j ? ' (excluded)' : ''}">${value.toFixed(2)}</td>`;
-    }).join('')}</tr>`).join('')}</tbody></table><div class="matrix-legend"><span>Lower similarity</span><span class="legend-scale" aria-hidden="true"></span><span>Higher similarity</span></div><p class="matrix-note">Inspecting ${letters[focusedCandidate]} · self-similarity excluded</p>`;
-    $('#selection-content').innerHTML = `<div class="selected-answer"><span class="selected-label">Response ${letters[winner]} · strongest agreement</span>${responses[winner]}</div><div class="score-list" aria-label="LSC selection scores">${scores.map((score, i) => `<div class="score-row ${i === winner ? 'winner' : ''}"><span>${letters[i]}</span><div class="score-track"><div class="score-fill" style="width:${score / Math.max(...scores) * 100}%"></div></div><span>${score.toFixed(3)}</span></div>`).join('')}</div><p class="selection-hint">Click a candidate to inspect its similarity row. LSC selects an existing response; it does not synthesize a new answer.</p>`;
-  }
-}
-
-function stopReplay() {
-  replayTimers.forEach(clearTimeout);
-  replayTimers = [];
+    }).join('')}</tr>`).join('')}</tbody></table><div class="matrix-legend"><span>Lower similarity</span><span class="legend-scale" aria-hidden="true"></span><span>Higher similarity</span></div><p class="matrix-note" aria-live="polite">${focusedCandidate === null ? 'Rows and columns identify responses A–F' : `Inspecting ${letters[focusedCandidate]}`} · self-similarity excluded</p>`;
+  $('#selection-content').innerHTML = `<div class="selected-answer"><span class="selected-label">Return response ${letters[winner]} · strongest agreement</span>${responses[winner]}</div><p class="score-heading">LSC selection score · higher means more agreement</p><div class="score-list" aria-label="LSC selection scores">${scores.map((score, i) => `<div class="score-row ${i === winner ? 'winner' : ''}"><span>${letters[i]}</span><div class="score-track"><div class="score-fill" style="width:${score / Math.max(...scores) * 100}%"></div></div><span>${score.toFixed(3)}</span></div>`).join('')}</div><p class="selection-hint">These bars represent the displayed selection scores. Each score averages exp(similarity / 0.5) over the other five responses.</p>`;
 }
 
 function initDemo() {
   drawHero();
-  setStage(2);
-  $('.step-tabs').addEventListener('click', (event) => {
-    const tab = event.target.closest('[data-stage]');
-    if (!tab) return;
-    stopReplay();
-    setStage(Number(tab.dataset.stage));
-  });
-  $('.step-tabs').addEventListener('keydown', (event) => {
-    const tab = event.target.closest('[data-stage]');
-    if (!tab) return;
-    let nextStage = Number(tab.dataset.stage);
-    if (event.key === 'ArrowRight') nextStage = (nextStage + 1) % 3;
-    else if (event.key === 'ArrowLeft') nextStage = (nextStage + 2) % 3;
-    else if (event.key === 'Home') nextStage = 0;
-    else if (event.key === 'End') nextStage = 2;
-    else return;
-    event.preventDefault();
-    stopReplay();
-    setStage(nextStage);
-    $(`[data-stage="${nextStage}"]`).focus();
-  });
+  renderDemo();
   $('#candidates').addEventListener('click', (event) => {
     const button = event.target.closest('[data-candidate]');
     if (!button) return;
     focusedCandidate = Number(button.dataset.candidate);
     renderDemo();
     $(`[data-candidate="${focusedCandidate}"]`).focus();
-  });
-  $('#replay').addEventListener('click', () => {
-    stopReplay();
-    setStage(0);
-    replayTimers = [setTimeout(() => setStage(1), 1700), setTimeout(() => setStage(2), 3400)];
   });
 }
 

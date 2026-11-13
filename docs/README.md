@@ -33,6 +33,18 @@ cosine matrix and selection scores are computed in the browser using the paper's
 base LSC formula, with the diagonal excluded. It does not run a model or reproduce
 an embedding projection. The optional Dynamic TopK method is explained separately.
 
+The inference scenario keeps all five stages visible: one question enters the
+LLM, six responses are sampled, summary tokens produce response embeddings,
+pairwise similarities form a matrix, and LSC returns the highest-scoring response.
+Response IDs A–F remain consistent throughout. There are no decorative response
+length bars or hidden stages.
+
+The training section follows the paper's Method and Appendices A/C. It covers
+dataset composition, pseudo-label extraction, the MMLU explanation transformation,
+question-group filtering/splitting, supervised contrastive learning, and updates
+to only the added token embeddings. Dataset counts are question groups, not
+response counts. Training diagrams are explanatory schematics, not new runs.
+
 The diagrams are editable SVG/HTML, with all text rendered as accessible text.
 The layout supports narrow screens, keyboard navigation, and reduced motion.
 There are no analytics, external fonts, remote scripts, or backend services.

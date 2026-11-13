@@ -15,7 +15,7 @@ Official implementation for Latent Self-Consistency (LSC): a latent-space self-c
 
 [![LSC research website: method visualization, model-by-model results, and resources](docs/assets/preview.png)](https://jeongseoko.github.io/LatentSC/)
 
-The research website explains LSC's contributions and differences from SC, WUCS, and USC through an interactive inference walkthrough. Explore the paper's quality, selection consistency, runtime overhead, and memory overhead across three models, with detailed benchmark tables and explicit limitations.
+The research website follows one question through candidate generation, special-token encoding, the similarity matrix, and response selection. It also explains dataset construction and summary-token training, LSC's contributions and differences from SC, WUCS, and USC, and the paper's quality/cost results across three models.
 
 This repository is intended for public release. It does **not** store any API keys or private tokens. Please provide all credentials via environment variables.
 
