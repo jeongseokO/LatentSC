@@ -39,6 +39,12 @@ pairwise similarities form a matrix, and LSC returns the highest-scoring respons
 Response IDs A–F remain consistent throughout. There are no decorative response
 length bars or hidden stages.
 
+The hero overview separately shows ten responses, with illustrative semantic
+groups of five, three, and two. The largest group and its representative response
+B are emphasized. Group boundaries are conceptual; LSC still selects through
+pairwise similarity scores, not an explicit clustering step. The detailed
+six-response walkthrough is a separate illustration.
+
 The training section follows the paper's Method and Appendices A/C. It covers
 dataset composition, pseudo-label extraction, the MMLU explanation transformation,
 question-group filtering/splitting, supervised contrastive learning, and updates

@@ -37,20 +37,34 @@
         <div class="actions"><a class="button primary" href="https://arxiv.org/abs/2508.18395">Read the paper <span aria-hidden="true">↗</span></a><a class="button" href="#method">Explore the method <span aria-hidden="true">↓</span></a></div>
       </div>
       <figure class="hero-figure">
-        <svg viewBox="0 0 580 410" role="img" aria-labelledby="hero-svg-title hero-svg-desc">
-          <title id="hero-svg-title">From candidate responses to semantic agreement</title>
-          <desc id="hero-svg-desc">Six responses are encoded with learned summary tokens. Four candidates form a shared semantic neighborhood; two outliers are separate. One existing response is selected. This is a schematic, not a measured embedding projection.</desc>
+        <svg viewBox="0 0 680 410" role="img" aria-labelledby="hero-svg-title hero-svg-desc">
+          <title id="hero-svg-title">Select a representative from the largest agreeing group</title>
+          <desc id="hero-svg-desc">Ten response embeddings form three illustrative groups of five, three, and two responses. The largest group, A through E, has a blue outline. Response B within that group is ringed as the selected response. This conceptual grouping illustrates majority-set selection; LSC computes pairwise similarity scores rather than explicitly clustering responses.</desc>
           <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 1 8 5 0 9" fill="none" stroke="#8997a2" stroke-width="1.5"/></marker></defs>
           <g id="hero-responses"></g>
-          <path d="M330 70 Q345 70 345 86 V300 Q345 316 330 316 M345 193 H370" fill="none" stroke="#8997a2" stroke-width="1.5" marker-end="url(#arrow)"/>
-          <ellipse cx="468" cy="195" rx="94" ry="120" fill="#f1f4fb"/>
-          <g stroke="#9caee5" stroke-width="1.5"><path d="M461 205 421 150 M461 205 505 165 M461 205 510 248 M421 150 505 165 M505 165 510 248 M421 150 510 248"/></g>
-          <g fill="#435bd5"><circle cx="421" cy="150" r="9"/><circle cx="505" cy="165" r="9"/><circle cx="510" cy="248" r="9"/><circle cx="461" cy="205" r="14" fill="#fff" stroke="#435bd5" stroke-width="5"/></g>
-          <g fill="#ce795b"><circle cx="519" cy="95" r="8"/><circle cx="417" cy="289" r="8"/></g>
-          <text x="461" y="210" text-anchor="middle" font-size="12" fill="#435bd5" font-family="Arial,sans-serif">B</text>
-          <g font-family="Arial,sans-serif" fill="#637078" font-size="13"><text x="75" y="358" text-anchor="middle">Responses</text><text x="266" y="358" text-anchor="middle">Summary tokens</text><text x="468" y="358" text-anchor="middle">Semantic agreement</text></g>
-          <text x="290" y="397" text-anchor="middle" fill="#7a858e" font-family="Arial,sans-serif" font-size="11">Conceptual illustration · each dot represents one response</text>
+          <path d="M274 58 Q288 58 288 72 V302 Q288 316 274 316 M288 187 H319" fill="none" stroke="#8997a2" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <g class="hero-cluster majority-cluster" data-size="5">
+            <ellipse cx="492" cy="130" rx="111" ry="73" fill="#f1f4fb" stroke="#435bd5" stroke-width="2"/>
+            <text x="492" y="36" text-anchor="middle" fill="#435bd5" font-family="Arial,sans-serif" font-size="14" font-weight="600">Largest group · 5 responses</text>
+            <g fill="#435bd5"><circle data-response="A" cx="442" cy="112" r="8"/><circle data-response="B" cx="492" cy="130" r="13" fill="#fff" stroke="#435bd5" stroke-width="4"/><circle data-response="C" cx="536" cy="99" r="8"/><circle data-response="D" cx="544" cy="156" r="8"/><circle data-response="E" cx="450" cy="165" r="8"/></g>
+            <text x="492" y="135" text-anchor="middle" fill="#435bd5" font-family="Arial,sans-serif" font-size="12">B</text>
+            <path d="M492 216 V151" fill="none" stroke="#435bd5" stroke-width="1.3" marker-end="url(#arrow)"/>
+            <text x="492" y="237" text-anchor="middle" fill="#435bd5" font-family="Arial,sans-serif" font-size="13">Return response B</text>
+          </g>
+          <g class="hero-cluster" data-size="3">
+            <ellipse cx="393" cy="291" rx="59" ry="43" fill="#fbf1ec"/>
+            <g fill="#ce795b"><circle data-response="F" cx="369" cy="291" r="8"/><circle data-response="G" cx="397" cy="272" r="8"/><circle data-response="H" cx="417" cy="305" r="8"/></g>
+            <text x="393" y="355" text-anchor="middle" fill="#8b6557" font-family="Arial,sans-serif" font-size="13">3 responses</text>
+          </g>
+          <g class="hero-cluster" data-size="2">
+            <ellipse cx="588" cy="296" rx="49" ry="35" fill="#f0f3f5"/>
+            <g fill="#899aa6"><circle data-response="I" cx="570" cy="289" r="8"/><circle data-response="J" cx="606" cy="302" r="8"/></g>
+            <text x="588" y="355" text-anchor="middle" fill="#637078" font-family="Arial,sans-serif" font-size="13">2 responses</text>
+          </g>
+          <g font-family="Arial,sans-serif" fill="#637078" font-size="14"><text x="64" y="355" text-anchor="middle">10 responses</text><text x="210" y="355" text-anchor="middle">Summary tokens</text></g>
+          <text x="490" y="393" text-anchor="middle" fill="#637078" font-family="Arial,sans-serif" font-size="13">Response embeddings → majority-set selection</text>
         </svg>
+        <figcaption class="caption hero-caption">From illustrative groups of 5, 3, and 2, response B represents the largest agreeing group. LSC selects by pairwise similarity scores.</figcaption>
       </figure>
     </section>
 
