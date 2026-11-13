@@ -23,7 +23,7 @@ function drawHero() {
   svg.innerHTML = Array.from({length: 10}, (_, i) => {
     const letter = String.fromCharCode(65 + i);
     const y = 58 + i * 26;
-    return `<g data-hero-response="${letter}"><rect x="5" y="${y}" width="118" height="21" rx="3" fill="#fff" stroke="#ccd5e1"/><text x="64" y="${y + 15}" text-anchor="middle" fill="#435bd5" font-family="Arial,sans-serif" font-size="11">Response ${letter}</text><path d="M132 ${y + 10} H151" stroke="#8997a2" fill="none" marker-end="url(#arrow)"/>${Array.from({length: 6}, (_, j) => `<rect x="${164 + 18 * j}" y="${y + 5}" width="12" height="12" rx="2" fill="#435bd5"/>`).join('')}</g>`;
+    return `<g data-hero-response="${letter}"><rect x="5" y="${y}" width="118" height="21" rx="4" fill="${letter === 'B' ? '#eef2ff' : '#fafbfd'}" stroke="${letter === 'B' ? '#aabbea' : '#dce3ee'}"/><text x="64" y="${y + 15}" text-anchor="middle" fill="${letter === 'B' ? '#435bd5' : '#65758b'}" font-family="Arial,sans-serif" font-size="11">Response ${letter}</text><path d="M132 ${y + 10} H151" stroke="#aab6c7" fill="none" marker-end="url(#arrow)"/>${Array.from({length: 6}, (_, j) => `<rect x="${164 + 18 * j}" y="${y + 5}" width="12" height="12" rx="3" fill="#e7ecfc" stroke="#9caee5" stroke-width=".8"/>`).join('')}</g>`;
   }).join('');
 }
 
