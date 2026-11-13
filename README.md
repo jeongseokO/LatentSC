@@ -11,6 +11,12 @@ license: other
 
 Official implementation for Latent Self-Consistency (LSC): a latent-space self-consistency method for reliable majority-set selection in short- and long-answer reasoning.
 
+[**Research website →**](https://jeongseoko.github.io/LatentSC/) · [Paper](https://arxiv.org/abs/2508.18395) · [Qwen3 8B checkpoint](https://huggingface.co/jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens)
+
+[![LSC research website: method visualization, model-by-model results, and resources](docs/assets/preview.png)](https://jeongseoko.github.io/LatentSC/)
+
+The research website explains LSC's contributions and differences from SC, WUCS, and USC through an interactive inference walkthrough. Explore the paper's quality, selection consistency, runtime overhead, and memory overhead across three models, with detailed benchmark tables and explicit limitations.
+
 This repository is intended for public release. It does **not** store any API keys or private tokens. Please provide all credentials via environment variables.
 
 ---

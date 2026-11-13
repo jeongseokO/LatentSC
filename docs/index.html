@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Latent Self-Consistency · LSC</title>
+  <meta name="description" content="Learn how Latent Self-Consistency uses learned summary tokens to select semantically consistent responses across short and long answers. AAAI 2026, Seoul National University.">
+  <meta property="og:title" content="Latent Self-Consistency">
+  <meta property="og:description" content="Reliable majority-set selection in short- and long-answer reasoning. Explore the method, results, and code.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://jeongseoko.github.io/LatentSC/">
+  <meta property="og:image" content="https://jeongseoko.github.io/LatentSC/assets/preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://jeongseoko.github.io/LatentSC/">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="header wrap">
+    <a class="wordmark" href="#" aria-label="LSC home">LSC<span class="brand-dot">.</span></a>
+    <nav aria-label="Main navigation">
+      <a href="#method">Method</a><a href="#results">Results</a><a href="#resources">Resources</a>
+      <a class="nav-paper" href="https://arxiv.org/abs/2508.18395">Paper <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="title">
+      <div class="hero-copy">
+        <h1 id="title">Latent<br>Self-Consistency</h1>
+        <p class="hero-subtitle">Reliable selection across<br class="desktop-break"> short and long answers.</p>
+        <p class="hero-description">LSC compares multiple responses through learned summary tokens and selects the one with the strongest semantic agreement.</p>
+        <p class="authors">Jungsuk Oh <span class="and">and</span> Jay-Yoon Lee</p>
+        <p class="affiliation">Seoul National University <span aria-hidden="true">/</span> AAAI 2026</p>
+        <div class="actions"><a class="button primary" href="https://arxiv.org/abs/2508.18395">Read the paper <span aria-hidden="true">↗</span></a><a class="button" href="#method">Explore the method <span aria-hidden="true">↓</span></a></div>
+      </div>
+      <figure class="hero-figure">
+        <svg viewBox="0 0 580 410" role="img" aria-labelledby="hero-svg-title hero-svg-desc">
+          <title id="hero-svg-title">From candidate responses to semantic agreement</title>
+          <desc id="hero-svg-desc">Six responses are encoded with learned summary tokens. Four candidates form a shared semantic neighborhood; two outliers are separate. One existing response is selected. This is a schematic, not a measured embedding projection.</desc>
+          <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 1 8 5 0 9" fill="none" stroke="#8997a2" stroke-width="1.5"/></marker></defs>
+          <g id="hero-responses"></g>
+          <path d="M330 70 Q345 70 345 86 V300 Q345 316 330 316 M345 193 H370" fill="none" stroke="#8997a2" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <ellipse cx="468" cy="195" rx="94" ry="120" fill="#f1f4fb"/>
+          <g stroke="#9caee5" stroke-width="1.5"><path d="M461 205 421 150 M461 205 505 165 M461 205 510 248 M421 150 505 165 M505 165 510 248 M421 150 510 248"/></g>
+          <g fill="#435bd5"><circle cx="421" cy="150" r="9"/><circle cx="505" cy="165" r="9"/><circle cx="510" cy="248" r="9"/><circle cx="461" cy="205" r="14" fill="#fff" stroke="#435bd5" stroke-width="5"/></g>
+          <g fill="#ce795b"><circle cx="519" cy="95" r="8"/><circle cx="417" cy="289" r="8"/></g>
+          <text x="461" y="210" text-anchor="middle" font-size="12" fill="#435bd5" font-family="Arial,sans-serif">B</text>
+          <g font-family="Arial,sans-serif" fill="#637078" font-size="13"><text x="75" y="358" text-anchor="middle">Responses</text><text x="266" y="358" text-anchor="middle">Summary tokens</text><text x="468" y="358" text-anchor="middle">Semantic agreement</text></g>
+          <text x="290" y="397" text-anchor="middle" fill="#7a858e" font-family="Arial,sans-serif" font-size="11">Conceptual illustration · each dot represents one response</text>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="problem wrap section" aria-labelledby="problem-title">
+      <div class="section-intro"><h2 id="problem-title">Agreement can survive<br>a change in wording.</h2><p>A numerical answer is easy to count. An explanation, a program, or a summary may have many valid forms. LSC measures agreement between response representations, so selection can work across both answer formats.</p></div>
+      <div class="example-answers" aria-label="Illustrative responses with the same conclusion">
+        <blockquote><span class="example-label">Response A</span>“Earth’s tilted axis changes how much sunlight each hemisphere receives.”</blockquote>
+        <blockquote><span class="example-label">Response B</span>“Seasons result from axial tilt as Earth travels around the Sun.”</blockquote>
+        <blockquote><span class="example-label">Response C</span>“The angle and duration of sunlight vary through the year because Earth is tilted.”</blockquote>
+      </div>
+      <p class="caption">Illustrative paraphrases. Exact string counts split these responses; semantic agreement connects them.</p>
+      <ul class="method-differences">
+        <li><h3>SC counts matching answers.</h3><p>Sample responses, extract the final answers, and vote by exact match. This is effective when answers have a canonical form; free-form outputs need a way to compare meanings.</p></li>
+        <li><h3>WUCS compares words.</h3><p>Sample responses and rank them by probability-weighted unigram overlap. Selection is inexpensive, but shared vocabulary is an incomplete signal of shared conclusions.</p></li>
+        <li><h3>USC asks the model to judge.</h3><p>Place all candidates in a new prompt and ask the LLM to choose. This supports free-form comparison, while adding a judge pass over a new combined context.</p></li>
+        <li><h3>LSC compares learned summaries.</h3><p>Append learned tokens to each response, reuse its generation cache, and compare the resulting representations. It requires summary-token training and access to model internals.</p></li>
+      </ul>
+    </section>
+
+    <section id="method" class="section wrap" aria-labelledby="method-title">
+      <div class="section-intro"><h2 id="method-title">How LSC selects<br>a response.</h2><p>The candidates come from the same base LLM. LSC adds a representation and selection step after generation, then returns one of those candidates.</p></div>
+      <div class="explainer">
+        <div class="demo-toolbar"><div class="step-tabs" role="tablist" aria-label="Inference stages"><button id="tab-sample" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-stage="0"><span>01</span> Sample</button><button id="tab-encode" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-stage="1"><span>02</span> Encode</button><button id="tab-select" role="tab" aria-selected="true" aria-controls="demo-panel" data-stage="2"><span>03</span> Select</button></div><button id="replay" class="text-button">↻ Replay</button></div>
+        <p id="stage-description" class="stage-description" aria-live="polite"></p>
+        <div id="demo-panel" role="tabpanel" aria-labelledby="tab-select" tabindex="0" class="demo-grid">
+          <div class="candidate-column"><h3>Candidate responses</h3><p class="demo-question">Why do seasons change?</p><div id="candidates"></div></div>
+          <div class="encoding-column"><h3 id="encoding-title">Pairwise similarity</h3><div id="encoding-content"></div></div>
+          <div class="selection-column"><h3>Selected response</h3><div id="selection-content" aria-live="polite"></div></div>
+        </div>
+        <p class="caption demo-caption">Illustrative example with constructed unit vectors, not live model inference or a measured embedding projection. Scores use the paper’s LSC rule, excluding self-similarity.</p>
+      </div>
+      <div class="contributions">
+        <div><h2>What LSC<br>contributes.</h2><p>The base LLM stays frozen. Training updates only the new summary-token embeddings; a short forward pass through the same model turns each completed response into a representation.</p><div class="token-flow" aria-label="Question, response, then six learned summary tokens"><span>Question</span><b aria-hidden="true">→</b><span>Response</span><b aria-hidden="true">→</b><span class="summary-token">S₁</span><span class="summary-token">S₂</span><span class="summary-token">S₃</span><span class="summary-token">S₄</span><span class="summary-token">S₅</span><span class="summary-token">S₆</span></div><p class="caption">Six learned tokens per response in the main experiments.</p></div>
+        <ol class="contribution-list">
+          <li><h3>Learned semantic summaries</h3><p>Supervised contrastive learning brings responses with the same answer label closer and separates those with different labels. Mean pooling and normalization yield one representation per response.</p><p class="benefit">One selection mechanism for short answers, explanations, code, and summaries.</p></li>
+          <li><h3>Cache-aware selection</h3><p>Summary tokens attend to the completed response using its existing KV cache. Only the appended positions need a new forward pass; the response is not encoded again from scratch.</p><p class="benefit">No separate judge model or combined-candidate judge prompt.</p></li>
+          <li><h3>Adaptive neighborhoods</h3><p>The optional Dynamic TopK variant examines each candidate’s nearest neighbors. It selects a neighborhood size just before the largest drop in the best average similarity.</p><p class="benefit">A way to reduce the influence of outliers when the majority set is small.</p></li>
+        </ol>
+      </div>
+      <details class="math-details"><summary>The scoring rule</summary><div class="math-body"><p>Let <i>z</i><sub>i</sub> be the normalized mean of the final-layer summary-token states for response <i>i</i>. Pairwise cosine similarity is <i>S</i><sub>ij</sub> = <i>z</i><sub>i</sub> · <i>z</i><sub>j</sub>.</p><div class="equation">w<sub>i</sub> = <span class="fraction"><span>1</span><span>N − 1</span></span> ∑<sub>j ≠ i</sub> exp(S<sub>ij</sub> / τ′)<span class="equation-note">τ′ = 0.5</span></div><p>LSC returns the candidate with the largest score. Exponential weighting gives close neighbors more influence than distant responses. This is a consistency score, not a guarantee that the selected answer is correct.</p><a href="https://arxiv.org/html/2508.18395v3#S3">Read the method in the paper ↗</a></div></details>
+    </section>
+
+    <section id="results" class="section wrap" aria-labelledby="results-title">
+      <div class="section-intro"><h2 id="results-title">The evidence,<br>model by model.</h2><p>Three instruction-tuned models. Six short-answer and five long-answer benchmarks. The results below are reported in the paper; no experiments were rerun for this website.</p></div>
+      <div class="setup-line"><span>10 candidates / question</span><span>Temperature 0.9</span><span>Top-p 0.95</span><span>6 summary tokens</span></div>
+      <p class="caption setup-note">Up to 1,000 examples per dataset; three sampling seeds (11, 33, 77). See the paper for evaluation protocols and code-generation standard deviations. Long-answer test benchmarks were excluded from summary-token training.</p>
+      <div id="results-loading" role="status">Loading the paper’s results…</div>
+      <noscript><p>Enable JavaScript to explore the tables, or <a href="https://arxiv.org/html/2508.18395v3">read every result in the paper</a>.</p></noscript>
+      <div id="results-explorer" hidden>
+        <div class="result-controls"><label>Model<select id="model-select"><option value="llama8">Llama 3.1 8B Instruct</option><option value="qwen8">Qwen3 8B</option><option value="llama70">Llama 3.3 70B Instruct</option></select></label><label>View<select id="view-select"><option value="quality">Quality &amp; cost</option><option value="consistency">Majority-set selection</option></select></label><label>Compare with<select id="baseline-select"><option value="USC">USC</option><option value="WUCS">WUCS</option><option value="SC">SC</option></select></label></div>
+        <div id="quality-view"><div class="chart-pair"><div><h3>Short-answer average</h3><div id="chart-short" class="bar-chart"></div></div><div><h3>Long-answer average</h3><div id="chart-long" class="bar-chart"></div></div></div><p class="caption">Paper Table 1, reproduced as published. Axes start at zero. These format-level averages combine different task metrics; inspect the per-task tables before comparing individual capabilities.</p><div id="overview-table" class="table-scroll"></div><p class="caption">Time and memory are percentage overhead relative to the shared <strong>10-candidate generation</strong> workload, not single-response inference. SC’s long-answer result is unavailable. No absolute latency, throughput, or peak VRAM is provided in this summary.</p><div id="comparison" class="comparison" aria-live="polite"></div><p id="model-interpretation" class="interpretation"></p></div>
+        <div id="consistency-view" hidden><div id="consistency-chart" class="bar-chart wide-chart"></div><div id="consistency-table" class="table-scroll"></div><p class="caption">Paper Table 4. Consistency is the percentage of selections belonging to the majority answer set among 10 candidates. For long answers, GPT-4.1 identifies the majority. This is a selection metric, not task accuracy.</p><p id="consistency-interpretation" class="interpretation"></p></div>
+        <details class="benchmark-details"><summary><span>Explore every benchmark</span><span class="summary-description">Per-task scores, metrics, and differences</span></summary><div class="benchmark-body"><label class="delta-control"><input type="checkbox" id="show-deltas"> Show absolute and relative changes against the selected baseline</label><div id="benchmark-tables"></div><p class="caption">Δ is an arithmetic difference in the metric’s own units; relative change is Δ / baseline × 100. For percentage metrics, Δ is in percentage points. N/A means the baseline was not evaluated. These differences do not establish statistical significance.</p><a class="download-link" href="assets/results.json" download>Download the source data (JSON) ↓</a></div></details>
+      </div>
+      <div class="research-notes"><div><h3>When LSC is useful</h3><p>Use it when you already sample multiple responses, need one selection procedure across answer formats, and can retain the generation cache. The small selection overhead matters most when generation is already the main cost.</p></div><div><h3>What the results do not imply</h3><p>Agreement can reinforce a shared mistake. LSC needs trained summary tokens and model-internal access. It does not remove the cost of generating candidates, and it does not win on every model or benchmark.</p></div></div>
+      <details class="ablation-details"><summary>What changes when the representation changes?</summary><div class="benchmark-body"><h3>Learned summaries vs. sentence embeddings</h3><div id="sbert-table" class="table-scroll"></div><p>On Llama 3.1 8B, LSC exceeds fine-tuned SBERT on MATH by 2.2 points (+4.4% relative), TruthfulQA by 0.4 points (+0.9%), and HumanEval by 1.2 points (+2.1%), while scoring 0.3 points lower on TriviaQA (−0.4%). This supports a task-dependent benefit from the learned representation, rather than a universal improvement.</p><h3>Calibration has its own trade-offs</h3><div id="calibration-table" class="table-scroll"></div><p>Lower ECE is better. LSC improves over WUCS on all four reported tasks, but SC has lower ECE on MATH (0.076 vs. 0.140) and TriviaQA (0.044 vs. 0.052). Relative to SC, LSC’s ECE rises by 0.064 (+84.2%) and 0.008 (+18.2%), respectively. Confidence quality should be checked separately from answer selection.</p><p class="caption">Paper Tables 5–6; Llama 3.1 8B. Accuracy / Truth / Pass@1 values are percentages; ECE is reported on a 0–1 scale.</p></div></details>
+      <details class="followup-details"><summary>What to test in your setting</summary><ol class="followup-list"><li><strong>Check whether agreement tracks correctness.</strong> Evaluate LSC and the relevant baseline on the same candidate pool. If majority-set selection improves without task quality improving, inspect shared errors before increasing the sampling budget.</li><li><strong>Measure the full cost.</strong> Time generation and selection separately, then report end-to-end latency and peak memory with and without cache reuse. This tests whether the reported small selection overhead transfers to your serving setup.</li><li><strong>Test the adaptive variant.</strong> Compare LSC and Dynamic TopK by majority-set size and task. Keep it only where its gains justify the added selection logic; the paper reports mixed results across models.</li></ol></details>
+      <p class="source-note">Source: <a href="https://arxiv.org/html/2508.18395v3">Oh &amp; Lee, arXiv:2508.18395v3</a>, Tables 1–6 and Appendix C / J. <a href="assets/results.json">Machine-readable values ↗</a></p>
+    </section>
+
+    <section id="resources" class="section wrap resources" aria-labelledby="resources-title">
+      <h2 id="resources-title">Paper, code,<br>and models.</h2>
+      <div class="resource-links"><a href="https://arxiv.org/abs/2508.18395"><span>01 / Paper</span><strong>The full study</strong><span aria-hidden="true">↗</span></a><a href="https://github.com/jeongseokO/LatentSC"><span>02 / Code</span><strong>Official implementation</strong><span aria-hidden="true">↗</span></a><a href="https://huggingface.co/jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens"><span>03 / Models</span><strong>Qwen3 8B checkpoint</strong><span aria-hidden="true">↗</span></a></div>
+      <div class="getting-started"><div><h3>Run a first example.</h3><p>Install the repository’s dependencies, then select responses with a released LSC checkpoint. This example uses SDPA; see the README for GPU requirements and other settings.</p><a href="https://github.com/jeongseokO/LatentSC#quick-start">Setup and reproduction instructions ↗</a></div><pre><code>git clone https://github.com/jeongseokO/LatentSC.git
+cd LatentSC
+python3 -m pip install -r requirements.txt
+
+ATTN_IMPL=sdpa \
+MODEL=jeongseokoh/LatentSC_qwen3_8b_6SummaryTokens \
+DATASET=MATH METHODS=LSC bash run.sh</code></pre></div>
+      <div class="citation-heading"><h3>Cite the paper</h3><button id="copy-citation" class="button small" aria-describedby="copy-status">Copy BibTeX</button></div>
+      <pre class="citation"><code id="citation-text">@article{oh2026latent,
+  title   = {Latent Self-Consistency for Reliable Majority-Set Selection
+             in Short- and Long-Answer Reasoning},
+  author  = {Oh, Jungsuk and Lee, Jay-Yoon},
+  journal = {Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume  = {40},
+  number  = {38},
+  pages   = {32591--32599},
+  year    = {2026},
+  doi     = {10.1609/aaai.v40i38.40536}
+}</code></pre><span id="copy-status" role="status" class="copy-status"></span>
+    </section>
+  </main>
+  <footer class="wrap footer"><a class="wordmark" href="#">LSC<span class="brand-dot">.</span></a><span>Jungsuk Oh &amp; Jay-Yoon Lee · Seoul National University</span><a href="https://github.com/jeongseokO/LatentSC">GitHub ↗</a></footer>
+</body>
+</html>
